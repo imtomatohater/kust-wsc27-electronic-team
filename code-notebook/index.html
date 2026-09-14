@@ -326,12 +326,13 @@ int main(void)
   <div class="hint">
     · 들여쓰기(탭/스페이스)는 입력한 그대로 유지되어 노트에 그려집니다.<br>
     · 한 줄이 너무 길면 코드 칸에 맞도록 글자 크기가 자동으로 줄어듭니다.<br>
-    · "PDF로 저장"을 누르면 인쇄 대화상자가 열립니다. 대상(프린터)을 "PDF로 저장"으로 선택하세요.
+    · "PDF로 저장"을 누르면 저장 확인 창이 뜹니다 (로컬 파일로 열었을 때는 인쇄 대화상자가 대신 열리며, 대상을 "PDF로 저장"으로 선택하면 됩니다).
   </div>
 </div>
 
 <div id="pages"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 (function () {
   const codeEl = document.getElementById('code');
@@ -340,10 +341,12 @@ int main(void)
   const fontsizeEl = document.getElementById('fontsize');
   const statusEl = document.getElementById('status');
   const pagesEl = document.getElementById('pages');
+  const printBtn = document.getElementById('printBtn');
 
   const MIN_FONT_PT = 6;
   const FONT_STEP = 0.5;
   const LINE_HEIGHT_RATIO = 1.65;
+  let lastLayout = null;
 
   function expandTabs(line, tabSize) {
     let result = '';
@@ -493,6 +496,7 @@ int main(void)
       const overflow = checkHorizontalOverflow(builtPages);
       if (!overflow || fontPt <= MIN_FONT_PT) {
         finalPages = builtPages;
+        lastLayout = { filename: filename, fontPt: fontPt, linesPerPage: linesPerPage, chunks: chunks };
         if (overflow && fontPt <= MIN_FONT_PT) {
           statusEl.textContent = '일부 줄이 너무 길어 ' + MIN_FONT_PT + 'pt에서도 칸을 넘어갑니다. 코드를 줄여서 입력해 주세요.';
         } else if (autoShrunk) {
@@ -507,11 +511,110 @@ int main(void)
     }
   }
 
+  const PDF_MARGIN_TOP = 14, PDF_MARGIN_LEFT = 12, PDF_MARGIN_RIGHT = 12, PDF_MARGIN_BOTTOM = 10;
+  const PDF_FILETAB_H = 8;
+  const PDF_CODE_FRACTION = 0.68;
+  const PDF_LN_WIDTH = 9;
+  const PT_TO_MM = 0.352778;
+
+  function buildPdfBlob(layout) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+
+    const pageW = 210, pageH = 297;
+    const contentLeft = PDF_MARGIN_LEFT;
+    const contentRight = pageW - PDF_MARGIN_RIGHT;
+    const contentWidth = contentRight - contentLeft;
+    const dividerX = contentLeft + contentWidth * PDF_CODE_FRACTION;
+    const codeTextX = contentLeft + PDF_LN_WIDTH;
+    const noteTextLeft = dividerX + 5;
+    const rowHeight = layout.fontPt * LINE_HEIGHT_RATIO * PT_TO_MM;
+    const top0 = PDF_MARGIN_TOP + PDF_FILETAB_H;
+
+    layout.chunks.forEach((chunk, pageIdx) => {
+      if (pageIdx > 0) doc.addPage();
+
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(140, 130, 105);
+      doc.text(layout.filename, contentLeft, PDF_MARGIN_TOP);
+      doc.setDrawColor(210, 202, 175);
+      doc.setLineWidth(0.15);
+      doc.line(contentLeft, PDF_MARGIN_TOP + 2, contentRight, PDF_MARGIN_TOP + 2);
+
+      doc.setDrawColor(200, 192, 160);
+      doc.line(dividerX, top0, dividerX, pageH - PDF_MARGIN_BOTTOM);
+
+      chunk.forEach((text, i) => {
+        const lineNo = pageIdx * layout.linesPerPage + i + 1;
+        const baseY = top0 + i * rowHeight + rowHeight * 0.72;
+
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(layout.fontPt);
+        doc.setTextColor(160, 150, 125);
+        doc.text(String(lineNo), contentLeft + PDF_LN_WIDTH - 2, baseY, { align: 'right' });
+
+        doc.setTextColor(40, 37, 32);
+        if (text) doc.text(text, codeTextX, baseY);
+
+        doc.setDrawColor(222, 214, 190);
+        doc.setLineWidth(0.1);
+        doc.line(noteTextLeft, top0 + (i + 1) * rowHeight, contentRight, top0 + (i + 1) * rowHeight);
+      });
+
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(160, 150, 125);
+      doc.text((pageIdx + 1) + ' / ' + layout.chunks.length, contentRight, pageH - 5, { align: 'right' });
+    });
+
+    return doc.output('blob');
+  }
+
+  async function getDownloadsCapability() {
+    if (typeof window.claude === 'undefined' || typeof window.claude.use !== 'function') return null;
+    try {
+      return await window.claude.use('downloads');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function exportPdf() {
+    if (!pagesEl.children.length || !lastLayout) renderAll();
+    if (!lastLayout) return;
+
+    const downloads = await getDownloadsCapability();
+
+    if (!downloads) {
+      window.print();
+      return;
+    }
+
+    printBtn.disabled = true;
+    const originalLabel = printBtn.textContent;
+    printBtn.textContent = 'PDF 생성 중...';
+    try {
+      const blob = buildPdfBlob(lastLayout);
+      const baseName = lastLayout.filename.replace(/\.[^.]+$/, '') || 'code-note';
+      await downloads.save({ filename: baseName + '.pdf', data: blob });
+      statusEl.textContent = 'PDF로 저장되었습니다.';
+    } catch (err) {
+      if (err && err.code === 'declined') {
+        // viewer cancelled the save prompt; nothing to report
+      } else if (err && err.code === 'too_large') {
+        statusEl.textContent = '파일이 너무 커서 저장할 수 없습니다. 코드 분량을 줄여 주세요.';
+      } else {
+        statusEl.textContent = 'PDF 저장에 실패했습니다: ' + ((err && err.message) || '알 수 없는 오류');
+      }
+    } finally {
+      printBtn.disabled = false;
+      printBtn.textContent = originalLabel;
+    }
+  }
+
   document.getElementById('renderBtn').addEventListener('click', renderAll);
-  document.getElementById('printBtn').addEventListener('click', function () {
-    if (!pagesEl.children.length) renderAll();
-    window.print();
-  });
+  printBtn.addEventListener('click', exportPdf);
 
   renderAll();
 })();
