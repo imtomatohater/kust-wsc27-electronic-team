@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>코드 정리 노트</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #e9ebee;
+    font-family: -apple-system, "Malgun Gothic", sans-serif;
+    color: #222;
+  }
+
+  .controls {
+    max-width: 900px;
+    margin: 20px auto;
+    background: #fff;
+    padding: 18px 20px;
+    border-radius: 10px;
+    box-shadow: 0 1px 6px rgba(0,0,0,.12);
+  }
+  .controls h1 { font-size: 18px; margin: 0 0 12px; }
+  .controls label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+  .controls textarea {
+    width: 100%;
+    min-height: 260px;
+    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    font-size: 13px;
+    tab-size: 4;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    resize: vertical;
+  }
+  .controls input[type="text"], .controls select, .controls input[type="number"] {
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .field-row {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    align-items: flex-end;
+  }
+  .field { display: flex; flex-direction: column; }
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; }
+  button {
+    padding: 9px 16px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #f4f4f4;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.primary { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  button:hover { filter: brightness(0.97); }
+  .hint { font-size: 12px; color: #888; margin-top: 10px; line-height: 1.5; }
+  .status { font-size: 12px; color: #b45309; margin-top: 8px; min-height: 16px; }
+
+  #pages {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+    padding: 28px 0 80px;
+  }
+
+  .page {
+    width: 210mm;
+    height: 297mm;
+    background: #fff;
+    box-shadow: 0 1px 8px rgba(0,0,0,.28);
+    padding: 14mm 12mm 10mm;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .page .filetab {
+    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    font-size: 9pt;
+    color: #8a8a8a;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #ccc;
+    margin-bottom: 2px;
+  }
+  .page .content {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .code-col {
+    flex: 0 0 68%;
+    border-right: 1px solid #ccc;
+    padding-right: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .note-col {
+    flex: 1;
+    padding-left: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .code-row {
+    display: flex;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  .code-row .ln {
+    flex: 0 0 32px;
+    color: #b3b3b3;
+    text-align: right;
+    padding-right: 10px;
+    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    user-select: none;
+  }
+  .code-row .code {
+    white-space: pre;
+    overflow: hidden;
+    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+  }
+  .note-row { border-bottom: 1px solid #dcdcdc; }
+  .page .pageno {
+    position: absolute;
+    right: 12mm;
+    bottom: 5mm;
+    font-size: 8pt;
+    color: #aaa;
+    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .controls { display: none; }
+    #pages { padding: 0; gap: 0; }
+    .page { box-shadow: none; }
+    .page { break-after: page; }
+    .page:last-child { break-after: auto; }
+  }
+  @page { size: A4; margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <h1>코드 정리 노트 생성기</h1>
+  <label for="code">코드 입력</label>
+  <textarea id="code" placeholder="여기에 코드를 붙여넣으세요...">#include &lt;stdio.h&gt;
+
+int main(void)
+{
+    int sum = 0;
+    for (int i = 1; i <= 10; i++)
+    {
+        sum += i;
+    }
+    printf("%d\n", sum);
+    return 0;
+}</textarea>
+
+  <div class="field-row">
+    <div class="field">
+      <label for="filename">파일 이름 (상단 표시)</label>
+      <input type="text" id="filename" value="main.c">
+    </div>
+    <div class="field">
+      <label for="tabsize">탭(들여쓰기) 크기</label>
+      <select id="tabsize">
+        <option value="2">2칸</option>
+        <option value="4" selected>4칸</option>
+        <option value="8">8칸</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="fontsize">글자 크기 (pt)</label>
+      <input type="number" id="fontsize" value="10" min="6" max="14" step="0.5" style="width:70px">
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button class="primary" id="renderBtn">노트 생성</button>
+    <button id="printBtn">PDF로 저장 (인쇄)</button>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="hint">
+    · 들여쓰기(탭/스페이스)는 입력한 그대로 유지되어 노트에 그려집니다.<br>
+    · 한 줄이 너무 길면 코드 칸에 맞도록 글자 크기가 자동으로 줄어듭니다.<br>
+    · "PDF로 저장"을 누르면 인쇄 대화상자가 열립니다. 대상(프린터)을 "PDF로 저장"으로 선택하세요.
+  </div>
+</div>
+
+<div id="pages"></div>
+
+<script>
+(function () {
+  const codeEl = document.getElementById('code');
+  const filenameEl = document.getElementById('filename');
+  const tabsizeEl = document.getElementById('tabsize');
+  const fontsizeEl = document.getElementById('fontsize');
+  const statusEl = document.getElementById('status');
+  const pagesEl = document.getElementById('pages');
+
+  const MIN_FONT_PT = 6;
+  const FONT_STEP = 0.5;
+  const LINE_HEIGHT_RATIO = 1.65;
+
+  function expandTabs(line, tabSize) {
+    let result = '';
+    let col = 0;
+    for (const ch of line) {
+      if (ch === '\t') {
+        const spaces = tabSize - (col % tabSize);
+        result += ' '.repeat(spaces);
+        col += spaces;
+      } else {
+        result += ch;
+        col += 1;
+      }
+    }
+    return result;
+  }
+
+  function buildPageSkeleton(filename) {
+    const page = document.createElement('div');
+    page.className = 'page';
+
+    const tab = document.createElement('div');
+    tab.className = 'filetab';
+    tab.textContent = filename || 'untitled';
+    page.appendChild(tab);
+
+    const content = document.createElement('div');
+    content.className = 'content';
+
+    const codeCol = document.createElement('div');
+    codeCol.className = 'code-col';
+    const noteCol = document.createElement('div');
+    noteCol.className = 'note-col';
+
+    content.appendChild(codeCol);
+    content.appendChild(noteCol);
+    page.appendChild(content);
+
+    return { page, codeCol, noteCol, content };
+  }
+
+  function makeCodeRow(lineNo, text, fontPt) {
+    const row = document.createElement('div');
+    row.className = 'code-row';
+    row.style.fontSize = fontPt + 'pt';
+    row.style.lineHeight = (fontPt * LINE_HEIGHT_RATIO) + 'pt';
+
+    const ln = document.createElement('span');
+    ln.className = 'ln';
+    ln.textContent = lineNo;
+
+    const code = document.createElement('span');
+    code.className = 'code';
+    code.textContent = text;
+
+    row.appendChild(ln);
+    row.appendChild(code);
+    return row;
+  }
+
+  function makeNoteRow(fontPt) {
+    const row = document.createElement('div');
+    row.className = 'note-row';
+    row.style.height = (fontPt * LINE_HEIGHT_RATIO) + 'pt';
+    return row;
+  }
+
+  function measureLinesPerPage(fontPt, filename) {
+    const probe = document.createElement('div');
+    probe.style.position = 'absolute';
+    probe.style.left = '-9999px';
+    probe.style.top = '0';
+    document.body.appendChild(probe);
+
+    const { page, codeCol, noteCol } = buildPageSkeleton(filename);
+    probe.appendChild(page);
+
+    let count = 0;
+    const maxTry = 400;
+    while (count < maxTry) {
+      const row = makeCodeRow(String(count + 1), 'sample', fontPt);
+      codeCol.appendChild(row);
+      noteCol.appendChild(makeNoteRow(fontPt));
+      count++;
+      if (codeCol.scrollHeight > codeCol.clientHeight + 1) {
+        codeCol.removeChild(codeCol.lastChild);
+        noteCol.removeChild(noteCol.lastChild);
+        count--;
+        break;
+      }
+    }
+    document.body.removeChild(probe);
+    return Math.max(count, 1);
+  }
+
+  function checkHorizontalOverflow(pageEls) {
+    for (const page of pageEls) {
+      const codeSpans = page.querySelectorAll('.code-row .code');
+      for (const span of codeSpans) {
+        if (span.scrollWidth > span.clientWidth + 1) return true;
+      }
+    }
+    return false;
+  }
+
+  function renderAll() {
+    statusEl.textContent = '';
+    pagesEl.innerHTML = '';
+
+    const rawLines = codeEl.value.replace(/\r\n/g, '\n').split('\n');
+    const tabSize = parseInt(tabsizeEl.value, 10);
+    const expandedLines = rawLines.map(l => expandTabs(l, tabSize));
+    const filename = filenameEl.value.trim() || 'untitled';
+
+    let fontPt = parseFloat(fontsizeEl.value) || 10;
+    let attempts = 0;
+    let finalPages = [];
+    let autoShrunk = false;
+
+    while (attempts < 20) {
+      attempts++;
+      const linesPerPage = measureLinesPerPage(fontPt, filename);
+
+      const chunks = [];
+      for (let i = 0; i < expandedLines.length; i += linesPerPage) {
+        chunks.push(expandedLines.slice(i, i + linesPerPage));
+      }
+      if (chunks.length === 0) chunks.push(['']);
+
+      const builtPages = [];
+      chunks.forEach((chunk, pageIdx) => {
+        const { page, codeCol, noteCol } = buildPageSkeleton(filename);
+        chunk.forEach((text, i) => {
+          const lineNo = pageIdx * linesPerPage + i + 1;
+          codeCol.appendChild(makeCodeRow(String(lineNo), text, fontPt));
+          noteCol.appendChild(makeNoteRow(fontPt));
+        });
+        const pageNoTag = document.createElement('div');
+        pageNoTag.className = 'pageno';
+        pageNoTag.textContent = (pageIdx + 1) + ' / ' + chunks.length;
+        page.appendChild(pageNoTag);
+        builtPages.push(page);
+      });
+
+      builtPages.forEach(p => pagesEl.appendChild(p));
+
+      const overflow = checkHorizontalOverflow(builtPages);
+      if (!overflow || fontPt <= MIN_FONT_PT) {
+        finalPages = builtPages;
+        if (overflow && fontPt <= MIN_FONT_PT) {
+          statusEl.textContent = '일부 줄이 너무 길어 ' + MIN_FONT_PT + 'pt에서도 칸을 넘어갑니다. 코드를 줄여서 입력해 주세요.';
+        } else if (autoShrunk) {
+          statusEl.textContent = '긴 줄이 있어 글자 크기를 ' + fontPt + 'pt로 자동 조정했습니다.';
+        }
+        break;
+      }
+
+      pagesEl.innerHTML = '';
+      fontPt = Math.max(MIN_FONT_PT, fontPt - FONT_STEP);
+      autoShrunk = true;
+    }
+  }
+
+  document.getElementById('renderBtn').addEventListener('click', renderAll);
+  document.getElementById('printBtn').addEventListener('click', function () {
+    if (!pagesEl.children.length) renderAll();
+    window.print();
+  });
+
+  renderAll();
+})();
+</script>
+</body>
+</html>
