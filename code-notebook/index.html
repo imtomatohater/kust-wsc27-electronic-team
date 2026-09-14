@@ -4,89 +4,211 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>코드 정리 노트</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
-  :root { color-scheme: light; }
+  :root {
+    color-scheme: light;
+    --canvas: #e7ebf1;
+    --canvas-line: #d3dae3;
+    --surface: #ffffff;
+    --surface-border: #d8dce3;
+    --text: #22262e;
+    --text-dim: #66708a;
+    --text-faint: #9aa2b5;
+    --accent: #2f4fa8;
+    --accent-strong: #1c3577;
+    --accent-soft: #e7ecfb;
+    --shadow: rgba(23, 35, 64, 0.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --canvas: #12151b;
+      --canvas-line: #1d2530;
+      --surface: #1b1f27;
+      --surface-border: #2b303c;
+      --text: #e6e9ef;
+      --text-dim: #aab0bc;
+      --text-faint: #707786;
+      --accent: #7c9af0;
+      --accent-strong: #aec3f5;
+      --accent-soft: #202a44;
+      --shadow: rgba(0, 0, 0, 0.55);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --canvas: #12151b;
+    --canvas-line: #1d2530;
+    --surface: #1b1f27;
+    --surface-border: #2b303c;
+    --text: #e6e9ef;
+    --text-dim: #aab0bc;
+    --text-faint: #707786;
+    --accent: #7c9af0;
+    --accent-strong: #aec3f5;
+    --accent-soft: #202a44;
+    --shadow: rgba(0, 0, 0, 0.55);
+  }
+
+  /* the notebook sheet always mimics real A4 paper, independent of app theme */
+  :root {
+    --paper: #fffdf8;
+    --paper-line: #ded6c2;
+    --paper-ink: #2a2721;
+    --paper-num: #a4977d;
+    --paper-divider: #cfc6ac;
+    --paper-tab: #948968;
+  }
+
   * { box-sizing: border-box; }
+  html, body { background: var(--canvas); }
   body {
     margin: 0;
-    background: #e9ebee;
-    font-family: -apple-system, "Malgun Gothic", sans-serif;
-    color: #222;
+    padding: 0 16px;
+    font-family: "Public Sans", -apple-system, "Malgun Gothic", sans-serif;
+    color: var(--text);
+    background-image: radial-gradient(var(--canvas-line) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  header.masthead {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 36px 4px 18px;
+  }
+  header.masthead .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  header.masthead h1 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(26px, 4vw, 34px);
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  header.masthead p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 14.5px;
+    max-width: 60ch;
+    line-height: 1.6;
   }
 
   .controls {
-    max-width: 900px;
-    margin: 20px auto;
-    background: #fff;
-    padding: 18px 20px;
-    border-radius: 10px;
-    box-shadow: 0 1px 6px rgba(0,0,0,.12);
+    max-width: 960px;
+    margin: 0 auto 8px;
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    padding: 22px 24px 20px;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px -18px var(--shadow);
   }
-  .controls h1 { font-size: 18px; margin: 0 0 12px; }
-  .controls label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+  .controls label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
   .controls textarea {
     width: 100%;
-    min-height: 260px;
-    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    min-height: 240px;
+    font-family: "JetBrains Mono", "D2Coding", monospace;
     font-size: 13px;
+    line-height: 1.6;
     tab-size: 4;
-    padding: 10px;
-    border: 1px solid #ccc;
-    border-radius: 6px;
+    padding: 14px;
+    border: 1px solid var(--surface-border);
+    border-radius: 10px;
     resize: vertical;
+    background: var(--canvas);
+    color: var(--text);
+  }
+  .controls textarea:focus, .controls input:focus, .controls select:focus, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
   .controls input[type="text"], .controls select, .controls input[type="number"] {
-    padding: 6px 8px;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    font-size: 13px;
+    padding: 8px 10px;
+    border: 1px solid var(--surface-border);
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-family: "Public Sans", sans-serif;
+    background: var(--surface);
+    color: var(--text);
   }
   .field-row {
     display: flex;
     gap: 18px;
     flex-wrap: wrap;
-    margin-top: 12px;
+    margin-top: 16px;
     align-items: flex-end;
   }
-  .field { display: flex; flex-direction: column; }
-  .btn-row { display: flex; gap: 10px; margin-top: 16px; }
+  .field { display: flex; flex-direction: column; min-width: 120px; }
+  .btn-row { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
   button {
-    padding: 9px 16px;
-    border-radius: 6px;
-    border: 1px solid #ccc;
-    background: #f4f4f4;
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--surface-border);
+    background: var(--surface);
+    color: var(--text);
+    font-family: "Public Sans", sans-serif;
     font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
   }
-  button.primary { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
-  button:hover { filter: brightness(0.97); }
-  .hint { font-size: 12px; color: #888; margin-top: 10px; line-height: 1.5; }
-  .status { font-size: 12px; color: #b45309; margin-top: 8px; min-height: 16px; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  button:not(.primary):hover { background: var(--accent-soft); }
+  .hint {
+    font-size: 12.5px;
+    color: var(--text-faint);
+    margin-top: 14px;
+    line-height: 1.7;
+    border-top: 1px solid var(--surface-border);
+    padding-top: 12px;
+  }
+  .status {
+    font-size: 12.5px;
+    color: var(--accent-strong);
+    margin-top: 10px;
+    min-height: 16px;
+    font-weight: 500;
+  }
 
   #pages {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 28px;
-    padding: 28px 0 80px;
+    gap: 30px;
+    padding: 32px 0 90px;
   }
 
   .page {
     width: 210mm;
     height: 297mm;
-    background: #fff;
-    box-shadow: 0 1px 8px rgba(0,0,0,.28);
+    max-width: 100%;
+    background: var(--paper);
+    box-shadow: 0 18px 40px -18px var(--shadow), 0 2px 6px rgba(0,0,0,.06);
     padding: 14mm 12mm 10mm;
     display: flex;
     flex-direction: column;
     position: relative;
+    color: var(--paper-ink);
   }
   .page .filetab {
-    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 9pt;
-    color: #8a8a8a;
+    color: var(--paper-tab);
     padding-bottom: 6px;
-    border-bottom: 1px solid #ccc;
+    border-bottom: 1px solid var(--paper-line);
     margin-bottom: 2px;
   }
   .page .content {
@@ -96,7 +218,7 @@
   }
   .code-col {
     flex: 0 0 68%;
-    border-right: 1px solid #ccc;
+    border-right: 1px solid var(--paper-divider);
     padding-right: 10px;
     overflow: hidden;
     display: flex;
@@ -115,30 +237,37 @@
   }
   .code-row .ln {
     flex: 0 0 32px;
-    color: #b3b3b3;
+    color: var(--paper-num);
     text-align: right;
     padding-right: 10px;
-    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
     user-select: none;
   }
   .code-row .code {
     white-space: pre;
     overflow: hidden;
-    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    font-family: "JetBrains Mono", "D2Coding", monospace;
   }
-  .note-row { border-bottom: 1px solid #dcdcdc; }
+  .note-row { border-bottom: 1px solid var(--paper-line); }
   .page .pageno {
     position: absolute;
     right: 12mm;
     bottom: 5mm;
     font-size: 8pt;
-    color: #aaa;
-    font-family: "Consolas", "D2Coding", "Courier New", monospace;
+    color: var(--paper-num);
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (max-width: 480px) {
+    header.masthead, .controls { padding-left: 4px; padding-right: 4px; }
+    .field-row { gap: 12px; }
   }
 
   @media print {
-    body { background: #fff; }
-    .controls { display: none; }
+    body { background: #fff; padding: 0; }
+    header.masthead, .controls { display: none; }
     #pages { padding: 0; gap: 0; }
     .page { box-shadow: none; }
     .page { break-after: page; }
@@ -149,8 +278,13 @@
 </head>
 <body>
 
+<header class="masthead">
+  <p class="eyebrow">Printable · A4 · 10pt</p>
+  <h1>코드 정리 노트</h1>
+  <p>코드를 붙여넣으면 줄 번호와 들여쓰기를 그대로 살려 A4 필사 노트에 옮겨 적고, 오른쪽 줄에는 손글씨 메모 공간을 남겨 둡니다.</p>
+</header>
+
 <div class="controls">
-  <h1>코드 정리 노트 생성기</h1>
   <label for="code">코드 입력</label>
   <textarea id="code" placeholder="여기에 코드를 붙여넣으세요...">#include &lt;stdio.h&gt;
 
