@@ -1,0 +1,33 @@
+VERSION ""
+
+
+NS_ :
+    CM_
+    SIG_VALTYPE_
+
+BS_:
+
+BU_: VCU WaveSculptor22
+
+BO_ 1281 MotorDriveCommand: 8 VCU
+ SG_ MotorVelocitySetpoint : 0|32@1- (1,0) [-20000|20000] "rpm" WaveSculptor22
+ SG_ MotorCurrentSetpoint : 32|32@1- (1,0) [0|1] "%/100" WaveSculptor22
+
+BO_ 1282 MotorPowerCommand: 8 VCU
+ SG_ ReservedPower : 0|32@1- (1,0) [0|0] "" WaveSculptor22
+ SG_ BusCurrentSetpoint : 32|32@1- (1,0) [0|1] "%/100" WaveSculptor22
+
+BO_ 1283 ResetCommand: 8 VCU
+ SG_ ReservedReset0 : 0|32@1+ (1,0) [0|0] "" WaveSculptor22
+ SG_ ReservedReset1 : 32|32@1+ (1,0) [0|0] "" WaveSculptor22
+
+
+CM_ BO_ 1281 "Driver Controls base + 0x01. Must be sent at least every 250 ms or WS22 stops the motor.";
+CM_ SG_ 1281 MotorVelocitySetpoint "Desired motor velocity (rpm). Torque mode: +/- large value, current setpoint sets torque.";
+CM_ SG_ 1281 MotorCurrentSetpoint "Desired motor current as fraction of max current setting (0..1).";
+CM_ SG_ 1282 BusCurrentSetpoint "Max DC bus current as fraction of absolute bus current limit (0..1).";
+CM_ BO_ 1283 "Driver Controls base + 0x03. Resets WS22 software (clears latched errors).";
+SIG_VALTYPE_ 1281 MotorVelocitySetpoint : 1;
+SIG_VALTYPE_ 1281 MotorCurrentSetpoint : 1;
+SIG_VALTYPE_ 1282 ReservedPower : 1;
+SIG_VALTYPE_ 1282 BusCurrentSetpoint : 1;

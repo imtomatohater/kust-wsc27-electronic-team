@@ -1,0 +1,59 @@
+{
+  "can": {
+    "interface": "pcan",
+    "channel": "PCAN_USBBUS1",
+    "bitrate": 500000
+  },
+
+  "ids": {
+    "ws22_dbc_base": 128,
+    "ws22_base": 128,
+    "drive_cmd_dbc_base": 1280,
+    "driver_controls_base": 1280
+  },
+
+  "ws22": {
+    "max_rpm_setpoint": 1100,
+    "max_motor_current_Arms": 80.0,
+    "bus_current_limit_A": 50.0
+  },
+
+  "motor": {
+    "ke_Vpk_per_rpm": null
+  },
+
+  "limits": {
+    "bus_v_trip_low": 90.0,
+    "bus_v_min": 100.0,
+    "bus_v_max": 150.0,
+    "bus_v_trip_high": 155.0,
+    "bus_v_derate_band": 5.0,
+
+    "bus_i_max_drive_A": 30.0,
+    "bus_i_trip_A": 45.0,
+    "phase_i_trip_Arms": 75.0,
+
+    "regen_max_pct": 30.0,
+    "speed_mode_current_pct": 50.0,
+    "current_ramp_pct_per_s": 50.0,
+    "fault_ramp_pct_per_s": 100.0,
+
+    "overspeed_trip_rpm": 1250,
+    "heatsink_derate_C": 65.0,
+    "heatsink_trip_C": 78.0,
+    "motor_derate_C": 90.0,
+    "motor_trip_C": 110.0,
+
+    "bemf_warn_ratio": 0.85,
+    "bemf_cap_ratio": 0.90,
+    "bemf_trip_ratio": 0.97,
+
+    "rx_timeout_s": 0.6,
+    "ignore_errors": ["ErrorReserved", "ErrorWatchdogCausedLastReset"]
+  },
+
+  "loop": {
+    "control_hz": 20,
+    "log_hz": 10
+  }
+}
