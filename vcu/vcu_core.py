@@ -101,7 +101,7 @@ class RealBus:
 
 # WS22 broadcast offsets from its base address (see dbc/ws22.dbc)
 WS22_OFFSETS = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0C, 0x0E, 0x17)
-COMMON_BITRATES = (500000, 250000, 125000, 1000000, 50000, 100000, 800000)
+COMMON_BITRATES = (1000000, 500000, 250000, 125000, 50000, 100000, 800000)
 
 
 def guess_ws22_base(ids):

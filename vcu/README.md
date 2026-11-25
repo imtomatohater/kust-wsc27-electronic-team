@@ -49,7 +49,7 @@ python -m unittest discover -s tests                        # 테스트 (vcu/ �
 
 1. **CAN ID base address** — 받은 DBC는 ID가 0x80~0x97입니다. Profinity에서 WS22의
    *Base address*와 *Driver controls base address*를 확인하고 `config.json → ids`에 넣으세요.
-   - `ws22_base`: WS22 송신 base. **현재 차량 WS22 = 1024 (0x400, 공장 기본)** — 받은 DBC는 128(0x80) 기준이라 `ws22_dbc_base`는 128 유지
+   - `ws22_base`: WS22 송신 base. **현재 차량 WS22 = 1024 (0x400, 공장 기본), CAN 1 Mbit/s** — 받은 DBC는 128(0x80) 기준이라 `ws22_dbc_base`는 128 유지
    - `driver_controls_base`: WS22가 명령을 받는 base (기본 1280 = 0x500)
 2. **CAN 어댑터** — `config.json → can`. 예: PCAN `"pcan"/"PCAN_USBBUS1"`, Kvaser `"kvaser"/0`,
    USB‑CAN(slcan) `"slcan"/"COM5"`. bitrate는 WS22 설정과 같게.
@@ -140,7 +140,7 @@ VCU 처리 순서 (`pedal.py`):
 | 송신 실패 증가 | 버스에 ACK 해줄 노드 없음(WS22 꺼짐/bitrate 다름) 또는 어댑터 오류 → 메시지 확인 |
 
 ### 시작 창의 `CAN 자동 감지`
-통신속도(500k → 250k → 125k → 1M → …)를 차례로 **수신 전용(listen-only)** 으로 듣고, 정상 프레임이 들어오는
+통신속도(1M → 500k → 250k → 125k → …)를 차례로 **수신 전용(listen-only)** 으로 듣고, 정상 프레임이 들어오는
 속도와 WS22 주소를 찾아 설정 파일에 저장합니다. 버스에 아무것도 보내지 않습니다.
 PCAN-View 등 같은 어댑터를 쓰는 프로그램은 먼저 **연결 해제**하세요.
 

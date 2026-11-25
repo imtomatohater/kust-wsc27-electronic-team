@@ -37,7 +37,7 @@ class ScanTest(unittest.TestCase):
         best, res = scan_can('pcan', 'X', dwell=0.05, opener=lambda br: FakeBus(br))
         self.assertEqual(best['bitrate'], 250000)
         self.assertEqual(best['base'], 0x400)
-        self.assertEqual(res[0]['bitrate'], 500000)
+        self.assertEqual(res[0]['bitrate'], 1000000)
         self.assertGreater(res[0]['errors'], 0)
         self.assertEqual(res[0]['frames'], 0)
 
