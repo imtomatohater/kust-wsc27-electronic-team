@@ -338,13 +338,15 @@ class App:
         left.grid(row=2, column=0, sticky='nw')
         right = ttk.Frame(f, padding=(14, 0, 0, 0))
         right.grid(row=2, column=1, sticky='nw')
+        third = ttk.Frame(f, padding=(14, 0, 0, 0))
+        third.grid(row=2, column=2, sticky='nw')
 
-        # state banner (both columns)
+        # state banner (all columns)
         self.state_lbl = tk.Label(f, text='', font=(FONT, 20, 'bold'), fg='white')
-        self.state_lbl.grid(row=0, column=0, columnspan=2, sticky='ew')
-        self.msg_lbl = tk.Label(f, text='', fg='#dc2626', font=(FONT, 9), wraplength=760,
+        self.state_lbl.grid(row=0, column=0, columnspan=3, sticky='ew')
+        self.msg_lbl = tk.Label(f, text='', fg='#dc2626', font=(FONT, 9), wraplength=1000,
                                 justify='left', anchor='w', height=3)
-        self.msg_lbl.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(2, 6))
+        self.msg_lbl.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(2, 6))
 
         # ---------------- left column: controls + pedal + trend
         bf = ttk.Frame(left)
@@ -417,8 +419,8 @@ class App:
             lb.grid(row=i, column=1, sticky='e')
             self.vals[key] = lb
 
-        pm = ttk.LabelFrame(right, text='페달 모니터', padding=6)
-        pm.grid(row=1, column=0, sticky='nwe', pady=(8, 0))
+        pm = ttk.LabelFrame(third, text='페달 모니터', padding=6)
+        pm.grid(row=0, column=0, sticky='nwe')
         self.pv = {}
         rows = [('입력 소스', 'src'), ('페달 위치', 'travel'), ('토크 명령', 'torque'),
                 ('APPS1', 'v1'), ('APPS2', 'v2'), ('브레이크', 'brake'), ('상태', 'status')]
@@ -432,16 +434,33 @@ class App:
 
         self.sim_flags = {}
         if vcu.sim and vcu.pedal:
-            sf = ttk.LabelFrame(right, text='시뮬레이터 — 페달 노드 고장 주입', padding=6)
-            sf.grid(row=2, column=0, sticky='nwe', pady=(8, 0))
+            sf = ttk.LabelFrame(third, text='시뮬레이터 — 페달 노드 고장 주입', padding=6)
+            sf.grid(row=1, column=0, sticky='nwe', pady=(8, 0))
             for i, (name, key) in enumerate([('노드 끊기', 'off'), ('카운터 정지', 'frozen'),
                                              ('APPS1 단선', 'open'), ('APPS2 불일치', 'mismatch')]):
                 var = tk.BooleanVar(value=False)
                 ttk.Checkbutton(sf, text=name, variable=var).grid(row=i // 2, column=i % 2, sticky='w')
                 self.sim_flags[key] = var
 
+        # CAN diagnostics
+        cd = ttk.LabelFrame(right, text='CAN 진단', padding=6)
+        cd.grid(row=1, column=0, sticky='nwe', pady=(8, 0))
+        self.cv = {}
+        for i, (name, key) in enumerate([('어댑터', 'iface'), ('버스 상태', 'state'),
+                                         ('수신', 'rx'), ('송신', 'tx')]):
+            ttk.Label(cd, text=name).grid(row=i, column=0, sticky='nw', pady=1)
+            lb = ttk.Label(cd, text='-', font=('Consolas', 9), anchor='e', justify='right')
+            lb.grid(row=i, column=1, sticky='e')
+            self.cv[key] = lb
+        ttk.Label(cd, text='수신 ID').grid(row=4, column=0, sticky='nw', pady=(4, 0))
+        self.cv['ids'] = ttk.Label(cd, text='-', font=('Consolas', 9), justify='left')
+        self.cv['ids'].grid(row=4, column=1, sticky='w', pady=(4, 0))
+        self.cv['hints'] = tk.Label(cd, text='', fg='#b45309', font=(FONT, 9), justify='left',
+                                    wraplength=280, anchor='w')
+        self.cv['hints'].grid(row=5, column=0, columnspan=2, sticky='w', pady=(4, 0))
+
         self.out_lbl = ttk.Label(f, text='', foreground='#555')
-        self.out_lbl.grid(row=3, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        self.out_lbl.grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
         self.on_mode(apply=False)
         self.last_step = time.time()
         self.anim()
@@ -569,7 +588,8 @@ class App:
         st = s['state'] if s['fresh'] or s['state'] == FAULT else 'NO CAN'
         if s['monitor']:
             st = 'MONITOR' if s['fresh'] else 'MONITOR · NO CAN'
-        self.state_lbl.config(text=st, bg=COLORS.get(st, '#f59e0b'))
+        self.state_lbl.config(text=st + ('  ·  SIM (가상)' if self.v.sim else ''),
+                              bg=COLORS.get(st, '#f59e0b'))
         if s['state'] == FAULT and self.scale.get() != 0 and str(self.scale.cget('state')) != 'disabled':
             self.scale.set(0)                       # slider follows a trip back to 0
 
@@ -631,6 +651,18 @@ class App:
         else:
             self.out_lbl.config(text=f"송신 → vel {s['vel']:.0f} rpm | cur {s['cur']*100:.1f}% | "
                                      f"bus {s['bus']*100:.0f}%   (명령 {s['cmd']:.1f})")
+        c = s['can']
+        self.cv['iface'].config(text='시뮬레이터 (가상)' if not c['real'] else c['iface'])
+        stc = c['state'] or ('-' if c['real'] else 'SIM')
+        self.cv['state'].config(text=stc + (f"  에러프레임 {c['err_frames']}" if c['err_frames'] else ''),
+                                foreground='#dc2626' if stc in ('PASSIVE', 'ERROR') or c['err_frames']
+                                else '#16a34a' if stc == 'ACTIVE' else '')
+        self.cv['rx'].config(text=f"{c['rx']} ({c['rx_fps']:.0f}/s) · 인식 {c['rx_known']}")
+        self.cv['tx'].config(text=f"{c['tx']} ({c['tx_fps']:.0f}/s) · 실패 {c['tx_err']}",
+                             foreground='#dc2626' if c['tx_err'] else '')
+        self.cv['ids'].config(text='\n'.join(f"0x{i:03X} ×{n}{'' if ok else '  ?'}" for i, n, ok in c['ids'][:8])
+                              or '(없음)')
+        self.cv['hints'].config(text='\n'.join('• ' + h for h in c['hints']))
         self.root.after(100, self.tick)
 
 
@@ -660,7 +692,7 @@ class Launcher:
         self.info.grid(row=3, column=1, columnspan=2, sticky='w', padx=6, pady=(2, 8))
 
         ttk.Label(f, text='실행 모드').grid(row=4, column=0, sticky='nw')
-        self.mode = tk.StringVar(value='sim')
+        self.mode = tk.StringVar(value=self._load_state().get('mode', 'real'))
         mf = ttk.Frame(f)
         mf.grid(row=4, column=1, columnspan=2, sticky='w', padx=6)
         for i, (k, name) in enumerate(self.MODES):
@@ -684,7 +716,8 @@ class Launcher:
     def refresh(self):
         files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(DATA_DIR, '*.json')))
         self.cb['values'] = files
-        pick = [p for p in files if p == 'config_bench24v.json'] or files
+        last = self._load_state().get('config')
+        pick = [p for p in files if p == last] or [p for p in files if p == 'config_bench24v.json'] or files
         if pick and not self.cfg.get():
             self.cfg.set(pick[0])
         self.show_info()
@@ -716,8 +749,22 @@ class Launcher:
         except Exception as e:  # noqa: BLE001
             messagebox.showinfo(APP_NAME, f'{DATA_DIR}\n\n({e})')
 
+    STATE_FILE = os.path.join(DATA_DIR, 'launcher_state.json')
+
+    def _load_state(self):
+        try:
+            with open(self.STATE_FILE, encoding='utf-8') as fh:
+                return json.load(fh)
+        except Exception:  # noqa: BLE001
+            return {}
+
     def start(self):
         m = self.mode.get()
+        try:
+            with open(self.STATE_FILE, 'w', encoding='utf-8') as fh:
+                json.dump({'mode': m, 'config': self.cfg.get()}, fh)
+        except Exception:  # noqa: BLE001
+            pass
         vcu = open_vcu(self.path(), sim=m == 'sim', monitor=m == 'monitor')
         if vcu:
             self.root.unbind('<Return>')

@@ -71,15 +71,29 @@ class RealBus:
         import can  # pip install python-can
         self._can = can
         self.bus = can.Bus(interface=interface, channel=channel, bitrate=bitrate)
+        self.err_frames = self.ext_frames = 0     # diagnostics: frames we do not use
 
     def send(self, fid, data):
         self.bus.send(self._can.Message(arbitration_id=fid, data=data, is_extended_id=False))
 
     def recv(self, timeout):
         m = self.bus.recv(timeout)
-        if m is None or m.is_extended_id or m.is_error_frame:
+        if m is None:
+            return None
+        if m.is_error_frame:
+            self.err_frames += 1
+            return None
+        if m.is_extended_id:
+            self.ext_frames += 1
             return None
         return Frame(m.arbitration_id, bytes(m.data), m.timestamp)
+
+    def state(self):
+        """Controller state if the adapter reports it (ACTIVE / PASSIVE / ERROR = bus-off)."""
+        try:
+            return self.bus.state.name
+        except Exception:  # noqa: BLE001 — not every interface supports it
+            return None
 
     def close(self):
         self.bus.shutdown()
@@ -435,6 +449,9 @@ class Vcu:
         self.spedal = Pedal(self.pc)
         self.screen = None                # (mv1, mv2, brake, time)
 
+        self.diag = dict(rx=0, rx_known=0, tx=0, tx_err=0, rx_err=0, last_err='',
+                         ids={}, t0=time.time())
+        self._rate = (time.time(), 0, 0)
         self.monitor = monitor            # listen-only: never transmits, cannot ARM
         self.sim = sim
         c = self.cfg['can']
@@ -555,7 +572,7 @@ class Vcu:
                         fault_level=self.fault_level, mode=self.mode, source=self.source,
                         direction=self.direction, cmd=self.cmd, fresh=self._fresh(),
                         monitor=self.monitor, pedal=self.pedal_out, pedal_can=self.pedal_can_out,
-                        pedal_enabled=self.pedal is not None, **self.out)
+                        pedal_enabled=self.pedal is not None, can=self.can_diag(), **self.out)
 
     def close(self):
         self.stop()
@@ -568,6 +585,78 @@ class Vcu:
     def _fresh(self, names=('Status', 'BusMeasurement')):
         now, to = time.time(), self.cfg['limits']['rx_timeout_s']
         return all(now - self.rx_time.get(n, 0) < to for n in names)
+
+    # WS22 broadcast offsets from its base address (see dbc/ws22.dbc)
+    WS22_OFFSETS = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0C,
+                    0x0E, 0x17)
+
+    def can_diag(self):
+        """CAN health + plain-language hints. Called with self.lock held (from snapshot)."""
+        d, c, ids_cfg = self.diag, self.cfg['can'], self.cfg['ids']
+        now = time.time()
+        t_prev, rx_prev, tx_prev = self._rate
+        dt = now - t_prev
+        if dt >= 1.0:
+            self._rate = (now, d['rx'], d['tx'])
+            self._rx_fps = (d['rx'] - rx_prev) / dt
+            self._tx_fps = (d['tx'] - tx_prev) / dt
+        rx_fps, tx_fps = getattr(self, '_rx_fps', 0.0), getattr(self, '_tx_fps', 0.0)
+        real = isinstance(self.bus, RealBus)
+        st = self.bus.state() if real else None
+        errf = self.bus.err_frames if real else 0
+        extf = self.bus.ext_frames if real else 0
+        base_cfg = ids_cfg['ws22_base']
+        known = set(self.rx_db.messages) | set(self.pedal_db.messages if self.pedal_db else ())
+        tx_ids = set(self.cmd_db.messages)
+        seen = d['ids']
+        unknown = sorted(i for i in seen if i not in known and i not in tx_ids)
+
+        hints = []
+        up = now - d['t0']
+        if self.sim:
+            hints.append('시뮬레이터 모드 — 실제 CAN 어댑터를 쓰지 않습니다. 시작 창에서 "실제 CAN 구동" 또는 "모니터링"을 고르세요.')
+        if self.monitor:
+            hints.append('모니터링 모드 — 설계상 송신하지 않습니다 (수신만).')
+        if real and st in ('PASSIVE', 'ERROR'):
+            hints.append(f'버스 상태 {st}: bitrate 불일치, 종단저항(120 Ω x 2) 누락, CAN_H/L 반대 연결 가능성이 큽니다.')
+        if real and errf:
+            hints.append(f'에러 프레임 {errf}개: bitrate({c["bitrate"]})가 WS22 설정과 같은지, 배선/종단을 확인하세요.')
+        if real and up > 2 and d['rx'] == 0 and not errf:
+            hints.append('수신 프레임 0개: WS22 전원(12 V/버스), CAN_H/L/GND 배선, 종단저항, '
+                         f'어댑터 채널({c["channel"]}), bitrate({c["bitrate"]})를 확인하세요. '
+                         'PCAN-View 같은 다른 프로그램에서는 보이는지도 확인해 보세요.')
+        if d['rx'] and not d['rx_known']:
+            hints.append('프레임은 들어오는데 설정된 WS22 ID가 아닙니다 (아래 수신 ID 참고).')
+        # guess the WS22 base address from what is on the bus
+        best = None
+        for i in seen:
+            for off in (0x00, 0x01, 0x02, 0x03):
+                b = i - off
+                if b < 0:
+                    continue
+                score = sum(1 for o in self.WS22_OFFSETS if b + o in seen)
+                if score >= 4 and (best is None or score > best[1]):
+                    best = (b, score)
+        if best and best[0] != base_cfg:
+            hints.append(f'WS22 형태의 프레임이 0x{best[0]:03X} 기준으로 들어옵니다. '
+                         f'설정은 0x{base_cfg:03X} → config의 ids.ws22_base 를 {best[0]} 으로 바꾸세요.')
+        dc = ids_cfg['driver_controls_base']
+        if dc + 1 in seen:
+            hints.append(f'다른 장치가 0x{dc + 1:03X}(구동 명령)을 보내고 있습니다. Profinity 등에서 구동 명령을 끄세요.')
+        if extf:
+            hints.append(f'확장 ID(29-bit) 프레임 {extf}개 수신 — WS22는 표준 ID(11-bit)를 씁니다.')
+        if d['tx_err']:
+            hints.append('송신 실패: ' + d['last_err'])
+        elif d['rx_err']:
+            hints.append('수신 오류: ' + d['last_err'])
+        if real and self._fresh() and not hints:
+            hints.append('정상 — WS22 텔레메트리 수신 중.')
+        top = sorted(seen.items(), key=lambda kv: -kv[1])[:10]
+        return dict(real=real, iface=f'{c["interface"]} / {c["channel"]} / {c["bitrate"]} bps',
+                    state=st, rx=d['rx'], rx_known=d['rx_known'], tx=d['tx'], tx_err=d['tx_err'],
+                    err_frames=errf, rx_fps=rx_fps, tx_fps=tx_fps,
+                    ids=[(i, n, i in known or i in tx_ids) for i, n in top],
+                    unknown=unknown, hints=hints)
 
     def _pedal_active(self):
         if self.mode != TORQUE:
@@ -586,8 +675,11 @@ class Vcu:
         data = msg.encode(values)
         try:
             self.bus.send(msg.frame_id, data)
-        except Exception as e:
+            self.diag['tx'] += 1
+        except Exception as e:  # noqa: BLE001
             with self.lock:
+                self.diag['tx_err'] += 1
+                self.diag['last_err'] = f'송신: {type(e).__name__}: {e}'
                 self._trip(IMMEDIATE, f'CAN 송신 오류: {e}')
         if self.log.active:
             self.log.raw(time.time(), msg.frame_id, msg.name, data, 'TX')
@@ -614,16 +706,24 @@ class Vcu:
         while self.running:
             try:
                 fr = self.bus.recv(0.05)
-            except Exception:
+            except Exception as e:  # noqa: BLE001
+                self.diag['rx_err'] += 1
+                self.diag['last_err'] = f'수신: {type(e).__name__}: {e}'
                 time.sleep(0.05)
                 continue
             if fr is None:
                 continue
+            d = self.diag
+            d['rx'] += 1
+            d['ids'][fr.arbitration_id] = d['ids'].get(fr.arbitration_id, 0) + 1
             m = self.rx_db.messages.get(fr.arbitration_id)
             if m is None and self.pedal_db:
                 m = self.pedal_db.messages.get(fr.arbitration_id)
             if m is None:
+                if self.log.active:
+                    self.log.raw(time.time(), fr.arbitration_id, '?', fr.data, 'RX')
                 continue
+            d['rx_known'] += 1
             vals = m.decode(fr.data)
             now = time.time()
             with self.lock:
