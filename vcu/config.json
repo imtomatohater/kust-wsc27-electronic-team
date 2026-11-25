@@ -19,7 +19,30 @@
   },
 
   "motor": {
-    "ke_Vpk_per_rpm": null
+    "ke_Vpk_per_rpm": null,
+    "ke_learn_min_rpm": 150
+  },
+
+  "pedal": {
+    "enabled": false,
+    "can_id": 1536,
+    "timeout_s": 0.15,
+    "counter_check": true,
+    "dual_channel": false,
+    "ch1_mV_released": 600,
+    "ch1_mV_full": 4300,
+    "ch2_mV_released": 300,
+    "ch2_mV_full": 2150,
+    "fault_low_mV": 300,
+    "fault_high_mV": 4700,
+    "plausibility_pct": 10.0,
+    "fault_debounce_s": 0.1,
+    "deadzone_pct": 8.0,
+    "full_pct": 95.0,
+    "curve_exp": 1.0,
+    "max_torque_pct": 100.0,
+    "use_brake_switch": true,
+    "rearm_travel_pct": 5.0
   },
 
   "limits": {

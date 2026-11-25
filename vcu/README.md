@@ -8,6 +8,14 @@ MARAND 모터 + WaveSculptor22를 CAN으로 구동하는 간단한 VCU 프로그
 pip install python-can
 python vcu_app.py --sim      # 하드웨어 없이 시뮬레이터로 먼저 확인
 python vcu_app.py            # 실제 CAN
+python vcu_app.py --monitor  # 모니터링 전용: 수신·표시·로그만, CAN 송신 없음, ARM 불가
+
+# 24 V 파워 서플라이 벤치 테스트 (회생 OFF, 저전류, CAN 페달 입력)
+python vcu_app.py --config config_bench24v.json --sim       # 가상 페달 노드로 먼저 확인
+python vcu_app.py --config config_bench24v.json --monitor   # 실물: 페달·WS22 수신만 확인
+python vcu_app.py --config config_bench24v.json             # 실물 구동
+
+python -m unittest discover -s tests                        # 테스트 (vcu/ 에서)
 ```
 `tkinter`는 Windows용 Python에 기본으로 들어 있습니다.
 
@@ -18,6 +26,10 @@ python vcu_app.py            # 실제 CAN
 | `vcu_app.py` | UI (버튼 4개, 모드/방향, 슬라이더 1개, 계측값) |
 | `vcu_core.py` | CAN 송수신, 보호 로직, 로깅, 시뮬레이터 |
 | `dbc_lite.py` | DBC 파서 (추가 라이브러리 필요 없음) |
+| `pedal.py` | 가속페달 처리 (범위 검사, 데드존/곡선, 이중 센서 비교, 브레이크 우선). I/O 없음 → MCU로 그대로 이식 |
+| `dbc/vcu_pedal.dbc` | 페달 노드 → VCU 프레임 (기본 0x600) |
+| `config_bench24v.json` | 24 V 파워 서플라이 벤치용 설정 |
+| `tests/` | 페달 로직 단위 테스트 + 벤치 설정 시뮬 통합 테스트 |
 | `dbc/ws22.dbc` | 받은 WS22 DBC (WS22 → VCU 텔레메트리) |
 | `dbc/ws22_drive_cmd.dbc` | VCU → WS22 명령 DBC (0x501 Drive, 0x502 Power, 0x503 Reset) |
 | `config.json` | CAN 어댑터, ID base, 보호 한계값 |
@@ -45,6 +57,65 @@ python vcu_app.py            # 실제 CAN
 - **토크 모드 (일반 주행 = 가속 페달)**: 슬라이더 = 모터 전류 % = 토크. 음수는 회생제동 (`regen_max_pct`까지)
 - **속도 모드 (크루즈)**: 슬라이더 = 목표 rpm, 전류 한계는 `speed_mode_current_pct`
 - 모드/방향 변경은 DISARM + 정지 상태에서만
+
+## 24 V 파워 서플라이 벤치 테스트 (`config_bench24v.json`)
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| 전압 trip_low/min/max/trip_high | 18 / 20 / 26 / 28 V | 24 V 버스 기준 |
+| `regen_max_pct` | 0 | **파워 서플라이는 회생 전류를 흡수 못함** → 버스 전압 상승 |
+| `bus_i_max_drive_A` / `bus_i_trip_A` | 5 / 8 A | 서플라이 CC 한계보다 낮게 (CC 진입 → 전압 강하 → 저전압 trip) |
+| `bus_current_limit_A` | 10 A | **Profinity의 WS22 absolute bus current limit과 같게 설정할 것** |
+| `phase_i_trip_Arms` | 30 Arms | 무부하 벤치용 |
+| `pedal.max_torque_pct` | 20 % | 페달 끝까지 밟아도 전류 명령 20 % |
+| `max_rpm_setpoint` / `overspeed_trip_rpm` | 150 / 200 rpm | 24 V 무부하 최고속도보다 낮게 → 역기전력 trip 방지 |
+| `motor.ke_learn_min_rpm` | 40 rpm | 낮은 속도에서도 Ke 학습 |
+
+그래도 벤치 테스트 중에는:
+- **속도 모드는 쓰지 마세요** (목표 rpm을 낮추면 WS22가 회생 제동). 페달 입력은 토크 모드 전용입니다.
+- 속도 상한 도달 시 오버슈트 등으로 작은 회생이 생길 수 있으니 버스에 **블리드 저항**(예: 10 Ω / 100 W, 24 V에서 약 2.4 A)을 병렬로 다는 것을 권장합니다.
+- 모터를 손이나 다이노로 돌리지 말고, 회전 중 서플라이를 끄지 마세요.
+- Ke 확정 후 `ke_Vpk_per_rpm` 입력 → `max_rpm_setpoint ≈ 0.85 × 24 / (√3 × Ke)`로 재설정.
+
+순서: `--sim` → `--monitor`(페달 전압/카운터, WS22 텔레메트리 확인) → ARM 후 페달 살짝.
+
+## CAN 가속페달 입력
+
+페달 노드(MCU ADC)가 아래 프레임을 **20 ms(50 Hz)** 주기로 보냅니다. ID는 `pedal.can_id`(기본 1536 = 0x600).
+
+| 바이트 | 신호 | 내용 |
+|---|---|---|
+| 0–1 | `Apps1_mV` (u16, LE) | 센서 1 전압 mV (**분압 전, 센서 핀 기준 전압**으로 환산해서) |
+| 2–3 | `Apps2_mV` (u16, LE) | 센서 2 mV. 센서가 하나면 0 (`dual_channel: false`) |
+| 4 bit0 | `BrakeSwitch` | 1 = 브레이크 밟음 |
+| 5 | `PedalCounter` (u8) | 매 프레임 +1 (255→0). 멈추면 노드 정지로 판단 |
+
+```c
+// STM32 예시 (HAL). 5 V 페달 → 분압 1/2 → 3.3 V ADC 라고 가정
+uint16_t mv1 = adc1_raw * 3300 / 4095 * 2;
+uint8_t d[8] = { mv1 & 0xFF, mv1 >> 8, mv2 & 0xFF, mv2 >> 8, brake ? 1 : 0, cnt++, 0, 0 };
+// StdId = 0x600, DLC = 8
+```
+
+VCU 처리 순서 (`pedal.py`):
+1. **수신 확인** — 카운터가 `timeout_s`(150 ms) 동안 안 바뀌면 고장
+2. **범위 검사** — `fault_low_mV`(300) 미만 / `fault_high_mV`(4700) 초과 = 단선·단락. `fault_debounce_s` 동안 지속되면 고장 (그 사이에도 토크는 즉시 0)
+3. **위치 계산** — `ch1_mV_released` → 0 %, `ch1_mV_full` → 100 % (역방향 센서도 가능). **실제 페달로 측정해서 넣으세요**
+4. **이중 센서**(`dual_channel`) — 두 위치 차이가 `plausibility_pct` 초과면 고장, 정상이면 낮은 쪽 사용
+5. **매핑** — `deadzone_pct` 이하 0, `full_pct` 이상 100 %, 사이는 `^curve_exp` (1 = 선형). × `max_torque_pct` → 전류 명령 %
+6. **브레이크 우선** — 브레이크 ON → 0. 해제 후에도 페달을 `rearm_travel_pct` 아래로 뗐다 밟아야 토크 복귀
+
+- ARM 중 페달 고장 → **즉시 차단**(IMMEDIATE) FAULT 래치
+- ARM 조건에 "페달 뗀 상태·고장 없음" 추가
+- 페달 고장/수신 상태는 DISARM·모니터 모드에서도 계속 표시됩니다
+- UI에서 입력을 `슬라이더` / `CAN 가속페달`로 전환 (DISARM 상태에서만)
+- `--sim`에서는 가상 페달 노드 패널(전압 슬라이더, 브레이크, 노드 끊기, 카운터 정지, APPS2 불일치)로 고장을 주입해 볼 수 있습니다
+
+## 모니터링
+
+- `--monitor`: **아무것도 송신하지 않음**(0x501/0x502/0x503 없음), ARM 불가. WS22·페달 수신값 표시와 로그만. Profinity가 구동 중일 때 옆에서 보거나, 처음 배선 확인할 때 사용
+- 화면: 버스 V/A/W, rpm, 상전류, Iq, BEMFq, 온도, Ah, 역기전력 비율, 속도 상한, Ke, 페달 위치/토크 명령 막대, APPS1/2 전압, 브레이크, 페달 상태, WS22 Limit 플래그(경고줄)
+- 로그(`signals.csv`)에 페달 신호(`Apps1_mV`…), `source`, `pedal_travel_pct`, `pedal_torque_pct`, `pedal_fault` 열이 추가됩니다
 
 ## 보호 기능
 

@@ -13,11 +13,13 @@ import time
 from dataclasses import dataclass, field
 
 from dbc_lite import Database
+from pedal import Pedal, merged as pedal_merged, validate as validate_pedal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 DISARMED, ARMED, FAULT = 'DISARMED', 'ARMED', 'FAULT'
 TORQUE, SPEED = 'TORQUE', 'SPEED'
+SLIDER, PEDAL = 'SLIDER', 'PEDAL'          # command source
 
 
 # ----------------------------------------------------------------- CAN bus
@@ -50,11 +52,18 @@ class RealBus:
 
 
 class SimBus:
-    """Fake WS22 + motor + battery so the UI/protection can be tested without hardware.
-    Uses the same DBC files to encode the broadcast frames."""
+    """Fake WS22 + motor + DC source so the UI/protection can be tested without hardware.
+    Uses the same DBC files to encode the broadcast frames.
+    sim.bus_v / sim.source_r_ohm in config set the DC source (24 V PSU for the bench config).
+    A power supply cannot sink current: regen raises the bus voltage (sim.sink=false)."""
 
-    def __init__(self, rx_db, cmd_db):
-        self.rx_db, self.cmd_db = rx_db, cmd_db
+    def __init__(self, rx_db, cmd_db, cfg, pedal_db=None):
+        self.rx_db, self.cmd_db, self.pedal_db = rx_db, cmd_db, pedal_db
+        sc = cfg.get('sim', {})
+        self.v0, self.r_src = sc.get('bus_v', 140.0), sc.get('source_r_ohm', 0.15)
+        self.can_sink = sc.get('sink', True)
+        self.i_max = cfg['ws22']['max_motor_current_Arms']
+        self.ib_lim = cfg['ws22']['bus_current_limit_A']
         self.q, self.lock = [], threading.Lock()
         self.vel_sp = self.cur_sp = 0.0
         self.bus_sp = 1.0
@@ -62,10 +71,20 @@ class SimBus:
         self.err = 0
         self.v_extra = 0.0            # fault injection (test)
         self.t_extra = 0.0
-        self.ke = 0.075               # sim motor: V peak phase-neutral per rpm
+        self.ke = sc.get('ke_Vpk_per_rpm', 0.075)   # sim motor: V peak phase-neutral per rpm
         self.last_cmd = 0.0
+        # virtual pedal node
+        self.pedal_mv1, self.pedal_mv2, self.pedal_brake = 600.0, 300.0, 0
+        self.pedal_on, self.pedal_frozen, self.pedal_cnt = True, False, 0
         self.running = True
         threading.Thread(target=self._run, daemon=True).start()
+
+    def set_pedal(self, mv1=None, mv2=None, brake=None, on=None, frozen=None):
+        if mv1 is not None: self.pedal_mv1 = mv1
+        if mv2 is not None: self.pedal_mv2 = mv2
+        if brake is not None: self.pedal_brake = int(bool(brake))
+        if on is not None: self.pedal_on = on
+        if frozen is not None: self.pedal_frozen = frozen
 
     def send(self, fid, data):
         m = self.cmd_db.messages.get(fid)
@@ -89,29 +108,47 @@ class SimBus:
             time.sleep(0.002)
         return None
 
-    def _put(self, name, **sig):
-        m = self.rx_db.by_name[name]
+    def _put(self, name, db=None, **sig):
+        m = (db or self.rx_db).by_name[name]
         with self.lock:
             self.q.append(Frame(m.frame_id, m.encode(sig)))
 
     def _run(self):
         dt, n = 0.02, 0
+        v_bus = self.v0
         while self.running:
             # WS22 behaviour: no command for 250 ms -> stop driving
             cur = self.cur_sp if time.time() - self.last_cmd < 0.25 else 0.0
-            i_max, kt, J, drag = 100.0, 0.9, 0.6, 0.004
-            iq = cur * i_max * (1 if self.vel_sp > self.rpm else -1)
+            kt, J, drag = 0.9, 0.6, 0.004
+            iq = cur * self.i_max * (1 if self.vel_sp > self.rpm else -1)
             if abs(self.vel_sp - self.rpm) < 40:       # WS22 velocity loop ~ proportional near setpoint
                 iq *= abs(self.vel_sp - self.rpm) / 40
+            if iq * self.rpm > 0:                      # motoring: no torque once BEMF reaches Vbus
+                iq *= ramp01(SQRT3 * self.ke * abs(self.rpm), 0.85 * v_bus, v_bus)
             w = self.rpm * 2 * math.pi / 60
             p_mech = kt * iq * w
-            v_bus = 140.0 + self.v_extra - 0.15 * (p_mech / 140.0)
-            i_bus = min(p_mech / v_bus / 0.95, self.bus_sp * 50.0) if p_mech > 0 else p_mech * 0.9 / v_bus
+            if p_mech > 0:
+                i_bus = p_mech / v_bus / 0.95
+                lim = self.bus_sp * self.ib_lim
+                if i_bus > lim:                        # WS22 bus current limit
+                    iq, i_bus = iq * lim / i_bus, lim
+            else:
+                i_bus = p_mech * 0.9 / v_bus
+            if i_bus >= 0 or self.can_sink:
+                v_bus = self.v0 + self.v_extra - self.r_src * i_bus
+            else:                                      # PSU: regen charges the DC-link caps
+                v_bus += -i_bus * dt * 20.0
             self.rpm += (kt * iq - drag * self.rpm * abs(self.rpm) / 100) / J * dt * 60 / (2 * math.pi)
             self.hs_t += (abs(iq) * 0.004 - (self.hs_t - 25) * 0.002) * dt * 10
             self.m_t += (abs(iq) * 0.006 - (self.m_t - 25) * 0.002) * dt * 10
             self.ah += i_bus * dt / 3600
             n += 1
+            if self.pedal_db and self.pedal_on:        # 50 Hz pedal node
+                if not self.pedal_frozen:
+                    self.pedal_cnt = (self.pedal_cnt + 1) & 0xFF
+                self._put('PedalInput', self.pedal_db, Apps1_mV=self.pedal_mv1,
+                          Apps2_mV=self.pedal_mv2, BrakeSwitch=self.pedal_brake,
+                          PedalCounter=self.pedal_cnt)
             if n % 10 == 0:  # 200 ms
                 self._put('Status', ErrorHardwareOverCurrent=self.err, ActiveMotor=0)
                 self._put('BusMeasurement', BusVoltage=v_bus, BusCurrent=i_bus)
@@ -183,6 +220,14 @@ def validate_config(cfg):
         lim = L['bemf_cap_ratio'] * L['bus_v_min']
         need(v_ll <= lim, f'max_rpm_setpoint 에서 역기전력 선간피크 {v_ll:.1f} V > '
                           f'{lim:.1f} V (bus_v_min x bemf_cap_ratio)')
+    e += validate_pedal(cfg.get('pedal'))
+    pc = pedal_merged(cfg.get('pedal'))
+    if pc['enabled']:
+        ids = cfg['ids']
+        ws = range(ids['ws22_base'], ids['ws22_base'] + 0x20)
+        dc = range(ids['driver_controls_base'], ids['driver_controls_base'] + 0x20)
+        need(pc['can_id'] not in ws and pc['can_id'] not in dc,
+             f'pedal.can_id 0x{pc["can_id"]:X} 가 WS22 / Driver controls ID 범위와 겹침')
     return e
 
 
@@ -325,7 +370,7 @@ class Logger:
 
 # ------------------------------------------------------------------- VCU
 class Vcu:
-    def __init__(self, cfg_path=os.path.join(HERE, 'config.json'), sim=False):
+    def __init__(self, cfg_path=os.path.join(HERE, 'config.json'), sim=False, monitor=False):
         with open(cfg_path, encoding='utf-8') as f:
             self.cfg = json.load(f)
         problems = validate_config(self.cfg)
@@ -341,13 +386,29 @@ class Vcu:
         self.m_power = self.cmd_db.by_name['MotorPowerCommand']
         self.m_reset = self.cmd_db.by_name['ResetCommand']
 
+        # CAN accelerator pedal (optional)
+        self.pc = pedal_merged(self.cfg.get('pedal'))
+        self.pedal_db = self.pedal = None
+        if self.pc['enabled']:
+            self.pedal_db = Database().load(os.path.join(HERE, 'dbc', 'vcu_pedal.dbc')) \
+                .remap(0x600, self.pc['can_id'])
+            self.pedal = Pedal(self.pc)
+        self.pedal_out = None
+        self.pedal_cnt, self.pedal_alive_t = None, 0.0
+
+        self.monitor = monitor            # listen-only: never transmits, cannot ARM
+        self.sim = sim
         c = self.cfg['can']
-        self.bus = SimBus(self.rx_db, self.cmd_db) if sim else \
+        self.bus = SimBus(self.rx_db, self.cmd_db, self.cfg, self.pedal_db) if sim else \
             RealBus(c['interface'], c['channel'], c['bitrate'])
 
         self.prot = Protection(self.cfg)
         sig_names = [s.name for m in self.rx_db.messages.values() for s in m.signals]
-        self.log = Logger(sig_names + ['bemf_ratio', 'rpm_cap', 'ke_used', 'fault_level'])
+        if self.pedal_db:
+            sig_names += [s.name for m in self.pedal_db.messages.values() for s in m.signals]
+        self.log = Logger(sig_names + ['bemf_ratio', 'rpm_cap', 'ke_used', 'fault_level',
+                                       'source', 'pedal_travel_pct', 'pedal_torque_pct',
+                                       'pedal_fault'])
 
         self.ke_cfg = self.cfg['motor'].get('ke_Vpk_per_rpm')
         self.ke_learn = None              # learned from BEMFq / rpm if not configured
@@ -356,6 +417,7 @@ class Vcu:
         self.tel, self.rx_time = {}, {}
         self.state, self.fault, self.fault_level = DISARMED, '', ''
         self.mode, self.direction = TORQUE, 1
+        self.source = PEDAL if self.pedal else SLIDER
         self.cmd = 0.0                    # torque: -regen..100 %, speed: rpm
         self.cur_out, self.vel_hold = 0.0, 0.0
         self.out = dict(vel=0.0, cur=0.0, bus=0.0, drive=1.0, regen=1.0, warn=[],
@@ -367,6 +429,8 @@ class Vcu:
     # ---------- operator actions (called from UI) ----------
     def arm(self):
         with self.lock:
+            if self.monitor:
+                return '모니터링 전용 모드 — ARM 불가 (송신 안 함)'
             if self.state == FAULT:
                 return '먼저 FAULT 리셋'
             if not self._fresh():
@@ -375,7 +439,13 @@ class Vcu:
             L = self.cfg['limits']
             if not (L['bus_v_trip_low'] < v < L['bus_v_trip_high']):
                 return f'버스 전압 {v:.1f} V 범위 밖'
-            if self.cmd != 0:
+            if self._pedal_active():
+                po = self.pedal_out
+                if po is None or po['fault']:
+                    return '페달 이상: ' + (po['fault'] if po else '수신 전')
+                if po['torque'] > 0 or (po['travel'] or 0) > self.pc['rearm_travel_pct']:
+                    return '페달을 떼고 ARM'
+            elif self.cmd != 0:
                 return '명령을 0으로 놓고 ARM'
             self.state, self.cur_out = ARMED, 0.0
         return None
@@ -396,14 +466,33 @@ class Vcu:
         self._send(self.m_reset, {})       # clears latched WS22 errors
 
     def set_cmd(self, value):
+        """Slider command. Ignored while the CAN pedal is the command source."""
         with self.lock:
-            self.cmd = float(value)
+            if not self._pedal_active():
+                self.cmd = float(value)
 
     def set_mode(self, mode):
         with self.lock:
             if self.state == ARMED:
                 return 'DISARM 상태에서만 모드 변경'
+            if mode == SPEED and self.source == PEDAL:
+                return '페달 입력은 토크 모드 전용 — 입력을 슬라이더로 바꾼 뒤 속도 모드'
             self.mode, self.cmd = mode, 0.0
+
+    def set_source(self, src):
+        with self.lock:
+            if self.state == ARMED:
+                return 'DISARM 상태에서만 입력 변경'
+            if src == PEDAL and not self.pedal:
+                return 'config.json 의 pedal.enabled 가 false'
+            if src == PEDAL and self.mode != TORQUE:
+                return '페달 입력은 토크 모드에서만'
+            self.source, self.cmd = src, 0.0
+
+    def sim_pedal(self, **kw):
+        """Simulator only: drive the virtual pedal node (mv1, mv2, brake, on, frozen)."""
+        if self.sim and hasattr(self.bus, 'set_pedal'):
+            self.bus.set_pedal(**kw)
 
     def set_direction(self, d):
         with self.lock:
@@ -414,8 +503,10 @@ class Vcu:
     def snapshot(self):
         with self.lock:
             return dict(tel=dict(self.tel), state=self.state, fault=self.fault,
-                        fault_level=self.fault_level, mode=self.mode,
-                        direction=self.direction, cmd=self.cmd, fresh=self._fresh(), **self.out)
+                        fault_level=self.fault_level, mode=self.mode, source=self.source,
+                        direction=self.direction, cmd=self.cmd, fresh=self._fresh(),
+                        monitor=self.monitor, pedal=self.pedal_out,
+                        pedal_enabled=self.pedal is not None, **self.out)
 
     def close(self):
         self.stop()
@@ -429,7 +520,18 @@ class Vcu:
         now, to = time.time(), self.cfg['limits']['rx_timeout_s']
         return all(now - self.rx_time.get(n, 0) < to for n in names)
 
+    def _pedal_active(self):
+        return self.pedal is not None and self.source == PEDAL and self.mode == TORQUE
+
+    def _pedal_alive(self, now):
+        to = self.pc['timeout_s']
+        if self.pc['counter_check']:
+            return now - self.pedal_alive_t < to
+        return now - self.rx_time.get('PedalInput', 0) < to
+
     def _send(self, msg, values):
+        if self.monitor:
+            return
         data = msg.encode(values)
         try:
             self.bus.send(msg.frame_id, data)
@@ -452,7 +554,7 @@ class Vcu:
     def _learn_ke(self):
         t = self.tel
         rpm = abs(t.get('MotorVelocity', 0.0))
-        if rpm > 150 and 'BEMFq' in t and self._fresh(('BackEMFMeasurementPrediction',
+        if rpm > self.cfg['motor'].get('ke_learn_min_rpm', 150) and 'BEMFq' in t and self._fresh(('BackEMFMeasurementPrediction',
                                                        'VelocityMeasurement')):
             k = abs(t['BEMFq']) / rpm
             self.ke_learn = k if self.ke_learn is None else 0.98 * self.ke_learn + 0.02 * k
@@ -467,12 +569,17 @@ class Vcu:
             if fr is None:
                 continue
             m = self.rx_db.messages.get(fr.arbitration_id)
+            if m is None and self.pedal_db:
+                m = self.pedal_db.messages.get(fr.arbitration_id)
             if m is None:
                 continue
             vals = m.decode(fr.data)
+            now = time.time()
             with self.lock:
                 self.tel.update(vals)
-                self.rx_time[m.name] = time.time()
+                self.rx_time[m.name] = now
+                if m.name == 'PedalInput' and vals['PedalCounter'] != self.pedal_cnt:
+                    self.pedal_cnt, self.pedal_alive_t = vals['PedalCounter'], now
             if self.log.active:
                 self.log.raw(time.time(), fr.arbitration_id, m.name, fr.data, 'RX')
 
@@ -501,6 +608,21 @@ class Vcu:
                          bemf=None, warn=[])
                 if armed and not fresh:
                     p['trip'] = (IMMEDIATE, 'CAN 수신 타임아웃 (WS22 응답 없음)')
+                if self.pedal:                         # evaluated always, for monitoring
+                    now, t = time.time(), self.tel
+                    got = 'PedalInput' in self.rx_time
+                    po = self.pedal.evaluate(t.get('Apps1_mV') if got else None,
+                                             t.get('Apps2_mV') if got else None,
+                                             t.get('BrakeSwitch', 0), self._pedal_alive(now), now)
+                    self.pedal_out = po
+                    if self._pedal_active():
+                        self.cmd = po['torque']
+                        if po['fault'] and armed and not p['trip']:
+                            p['trip'] = (IMMEDIATE, '페달 고장: ' + po['fault'])
+                    if po['fault']:
+                        p['warn'] = p['warn'] + ['페달: ' + po['fault']]
+                    elif po['note']:
+                        p['warn'] = p['warn'] + ['페달: ' + po['note']]
                 if p['trip']:
                     self._trip(*p['trip'])
                 cap = p['rpm_cap']
@@ -536,7 +658,13 @@ class Vcu:
                             drive_scale=round(p['drive'], 3), regen_scale=round(p['regen'], 3),
                             fault=self.fault, fault_level=self.fault_level,
                             bemf_ratio='' if p['bemf'] is None else round(p['bemf'], 3),
-                            rpm_cap=round(cap, 1), ke_used='' if not ke else f'{ke:.5f}')
+                            rpm_cap=round(cap, 1), ke_used='' if not ke else f'{ke:.5f}',
+                            source=self.source)
+                po = self.pedal_out
+                if po:
+                    snap.update(pedal_travel_pct='' if po['travel'] is None else round(po['travel'], 1),
+                                pedal_torque_pct=round(po['torque'], 1),
+                                pedal_fault=po['fault'] or '')
 
             self._send(self.m_drive, dict(MotorVelocitySetpoint=vel, MotorCurrentSetpoint=cur))
             self._send(self.m_power, dict(BusCurrentSetpoint=bus))

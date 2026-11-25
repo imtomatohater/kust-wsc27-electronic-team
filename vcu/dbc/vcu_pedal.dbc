@@ -1,0 +1,22 @@
+VERSION ""
+
+
+NS_ :
+    CM_
+
+BS_:
+
+BU_: PedalNode VCU
+
+BO_ 1536 PedalInput: 8 PedalNode
+ SG_ Apps1_mV : 0|16@1+ (1,0) [0|5000] "mV" VCU
+ SG_ Apps2_mV : 16|16@1+ (1,0) [0|5000] "mV" VCU
+ SG_ BrakeSwitch : 32|1@1+ (1,0) [0|1] "On / Off" VCU
+ SG_ PedalCounter : 40|8@1+ (1,0) [0|255] "" VCU
+
+
+CM_ BO_ 1536 "Pedal node (MCU ADC) -> VCU. Send every 20 ms (50 Hz). ID is set by config.json pedal.can_id.";
+CM_ SG_ 1536 Apps1_mV "Accelerator pedal sensor 1, voltage at the sensor pin in mV (before any divider).";
+CM_ SG_ 1536 Apps2_mV "Accelerator pedal sensor 2 in mV. Send 0 if the pedal has only one sensor (pedal.dual_channel=false).";
+CM_ SG_ 1536 BrakeSwitch "1 = brake pedal pressed.";
+CM_ SG_ 1536 PedalCounter "Rolling counter, +1 every frame (wraps 255->0). Frozen counter = pedal node hung.";
