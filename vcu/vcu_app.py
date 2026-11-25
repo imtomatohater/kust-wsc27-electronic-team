@@ -20,7 +20,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from vcu_core import (Vcu, FAULT, TORQUE, SPEED, SLIDER, PEDAL, SCREEN, FAULT_TEXT,
-                      DATA_DIR, ensure_data_dir)
+                      DATA_DIR, ensure_data_dir, scan_can, save_can_settings)
+import threading
 
 APP_NAME = 'WS22 VCU'
 FONT = 'Malgun Gothic' if sys.platform == 'win32' else 'TkDefaultFont'
@@ -711,7 +712,11 @@ class Launcher:
         self.cb.bind('<<ComboboxSelected>>', lambda e: self.show_info())
         ttk.Button(f, text='찾아보기…', command=self.browse).grid(row=2, column=2)
         self.info = ttk.Label(f, text='', foreground='#475569', justify='left')
-        self.info.grid(row=3, column=1, columnspan=2, sticky='w', padx=6, pady=(2, 8))
+        self.info.grid(row=3, column=1, sticky='w', padx=6, pady=(2, 8))
+        self.scan_btn = ttk.Button(f, text='CAN 자동 감지', command=self.scan)
+        self.scan_btn.grid(row=3, column=2, sticky='n', pady=(2, 0))
+        self.scan_lbl = ttk.Label(f, text='', foreground='#2563eb')
+        self.scan_lbl.grid(row=7, column=0, columnspan=3, sticky='w')
 
         ttk.Label(f, text='실행 모드').grid(row=4, column=0, sticky='nw')
         self.mode = tk.StringVar(value=self._load_state().get('mode', 'real'))
@@ -729,6 +734,80 @@ class Launcher:
             .grid(row=6, column=0, columnspan=3, sticky='w', pady=(10, 0))
         root.bind('<Return>', lambda e: self.start())
         self.refresh()
+
+    def scan(self):
+        """Listen-only scan of common bitrates; detect WS22 base; offer to save to the config."""
+        try:
+            with open(self.path(), encoding='utf-8') as fh:
+                c = json.load(fh)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror(APP_NAME, f'설정 파일을 읽을 수 없음: {e}')
+            return
+        iface, ch = c['can']['interface'], c['can']['channel']
+        if not messagebox.askokcancel(
+                'CAN 자동 감지',
+                f'{iface} / {ch} 에서 통신속도와 WS22 주소를 찾습니다 (최대 약 10초).\n\n'
+                '• 수신 전용으로 듣기만 하며 버스에 아무것도 보내지 않습니다.\n'
+                '• PCAN-View 등 같은 어댑터를 쓰는 프로그램은 먼저 연결 해제(또는 종료)하세요.\n'
+                '• WS22 전원이 켜져 있어야 합니다.'):
+            return
+        self.scan_btn.state(['disabled'])
+        box = {}
+
+        def work():
+            try:
+                box['res'] = scan_can(iface, ch, progress=lambda t: box.__setitem__('msg', t))
+            except Exception as e:  # noqa: BLE001
+                box['err'] = f'{type(e).__name__}: {e}'
+            box['done'] = True
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            self.scan_lbl.config(text=box.get('msg', ''))
+            if not box.get('done'):
+                self.root.after(100, poll)
+                return
+            self.scan_btn.state(['!disabled'])
+            self.scan_lbl.config(text='')
+            if 'err' in box:
+                messagebox.showerror('CAN 자동 감지', box['err'])
+                return
+            self._scan_result(c, *box['res'])
+
+        poll()
+
+    def _scan_result(self, c, best, results):
+        lines = []
+        for r in results:
+            if r['error']:
+                lines.append(f"{r['bitrate'] // 1000:>5} kbps : 열기 실패 — {r['error'][:80]}")
+            else:
+                b = f", WS22 주소 0x{r['base']:03X}" if r['base'] is not None else ''
+                lines.append(f"{r['bitrate'] // 1000:>5} kbps : 정상 {r['frames']}, 에러 {r['errors']}{b}")
+        table = '\n'.join(lines)
+        if best is None:
+            messagebox.showwarning('CAN 자동 감지 — 찾지 못함',
+                                   table + '\n\n정상 프레임을 받은 속도가 없습니다.\n'
+                                   'WS22 전원, PCAN-View 연결 해제, 채널 이름, 배선을 확인하세요.')
+            return
+        cur_br, cur_base = c['can']['bitrate'], c['ids']['ws22_base']
+        new_base = best['base']
+        msg = (table + f"\n\n→ 감지: {best['bitrate']} bps"
+               + (f", WS22 주소 0x{new_base:03X} ({new_base})" if new_base is not None else
+                  ', WS22 주소는 판단 불가 (WS22 프레임 형태가 아님)')
+               + f"\n   현재 설정: {cur_br} bps, 0x{cur_base:03X} ({cur_base})")
+        if best['bitrate'] == cur_br and (new_base is None or new_base == cur_base):
+            messagebox.showinfo('CAN 자동 감지', msg + '\n\n설정이 이미 맞습니다.')
+            return
+        if messagebox.askyesno('CAN 자동 감지', msg + f'\n\n이 값을 설정 파일에 저장할까요?\n{self.path()}'):
+            try:
+                save_can_settings(self.path(), bitrate=best['bitrate'], ws22_base=new_base)
+            except Exception as e:  # noqa: BLE001
+                messagebox.showerror(APP_NAME, f'저장 실패: {e}')
+                return
+            self.show_info()
+            messagebox.showinfo('CAN 자동 감지', '저장했습니다. "시작"을 누르세요.')
 
     def path(self):
         """Combobox shows file names from DATA_DIR; '찾아보기' may give a full path."""

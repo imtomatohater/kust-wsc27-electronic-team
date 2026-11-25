@@ -99,6 +99,90 @@ class RealBus:
         self.bus.shutdown()
 
 
+# WS22 broadcast offsets from its base address (see dbc/ws22.dbc)
+WS22_OFFSETS = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0C, 0x0E, 0x17)
+COMMON_BITRATES = (500000, 250000, 125000, 1000000, 50000, 100000, 800000)
+
+
+def guess_ws22_base(ids):
+    """Base address whose WS22 broadcast offsets best match the IDs seen (None if unclear)."""
+    best = None
+    for i in ids:
+        for off in (0x00, 0x01, 0x02, 0x03):
+            b = i - off
+            if b < 0:
+                continue
+            score = sum(1 for o in WS22_OFFSETS if b + o in ids)
+            # ties (a run of consecutive IDs fits several bases): prefer 0x20/0x10 aligned
+            # bases — WS22 bases are set like 0x080, 0x400 — then one whose base+0 was seen
+            key = (score, b % 0x20 == 0, b % 0x10 == 0, b in ids)
+            if score >= 4 and (best is None or key > best[1]):
+                best = (b, key)
+    return best[0] if best else None
+
+
+def scan_can(interface, channel, bitrates=COMMON_BITRATES, dwell=1.2, opener=None, progress=None,
+             stop_when_found=True):
+    """Find the bus bitrate (and WS22 base) by LISTENING at each bitrate.
+    PCAN is opened listen-only, so the scan never transmits or ACKs and cannot disturb the bus.
+    opener(bitrate) -> bus object (tests). Returns (best result or None, all results)."""
+    import can
+    results = []
+    for br in bitrates:
+        r = dict(bitrate=br, frames=0, errors=0, ids={}, error='', base=None)
+        if progress:
+            progress(f'{br // 1000} kbps 확인 중…')
+        try:
+            if opener:
+                bus = opener(br)
+            else:
+                kw = dict(interface=interface, channel=channel, bitrate=br)
+                if interface == 'pcan':
+                    kw['state'] = can.BusState.PASSIVE          # listen-only
+                bus = can.Bus(**kw)
+        except Exception as e:  # noqa: BLE001
+            r['error'] = f'{type(e).__name__}: {e}'
+            results.append(r)
+            if 'already' in str(e).lower() or 'in use' in str(e).lower():
+                break
+            continue
+        try:
+            end = time.time() + dwell
+            while time.time() < end:
+                m = bus.recv(0.05)
+                if m is None:
+                    continue
+                if m.is_error_frame:
+                    r['errors'] += 1
+                elif not m.is_extended_id:
+                    r['frames'] += 1
+                    r['ids'][m.arbitration_id] = r['ids'].get(m.arbitration_id, 0) + 1
+        finally:
+            try:
+                bus.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        r['base'] = guess_ws22_base(r['ids'])
+        results.append(r)
+        if stop_when_found and r['frames'] >= 5 and r['errors'] == 0 and r['base'] is not None:
+            break
+    good = [r for r in results if r['frames'] > 0 and r['frames'] > r['errors']]
+    best = max(good, key=lambda r: (r['base'] is not None, r['frames'] - 5 * r['errors']),
+               default=None)
+    return best, results
+
+
+def save_can_settings(cfg_path, bitrate=None, ws22_base=None):
+    with open(cfg_path, encoding='utf-8') as f:
+        raw = json.load(f)
+    if bitrate is not None:
+        raw['can']['bitrate'] = int(bitrate)
+    if ws22_base is not None:
+        raw['ids']['ws22_base'] = int(ws22_base)
+    with open(cfg_path, 'w', encoding='utf-8') as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+
+
 class SimBus:
     """Fake WS22 + motor + DC source so the UI/protection can be tested without hardware.
     Uses the same DBC files to encode the broadcast frames.
@@ -586,10 +670,6 @@ class Vcu:
         now, to = time.time(), self.cfg['limits']['rx_timeout_s']
         return all(now - self.rx_time.get(n, 0) < to for n in names)
 
-    # WS22 broadcast offsets from its base address (see dbc/ws22.dbc)
-    WS22_OFFSETS = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0C,
-                    0x0E, 0x17)
-
     def can_diag(self):
         """CAN health + plain-language hints. Called with self.lock held (from snapshot)."""
         d, c, ids_cfg = self.diag, self.cfg['can'], self.cfg['ids']
@@ -619,7 +699,11 @@ class Vcu:
             hints.append('모니터링 모드 — 설계상 송신하지 않습니다 (수신만).')
         if real and st in ('PASSIVE', 'ERROR'):
             hints.append(f'버스 상태 {st}: bitrate 불일치, 종단저항(120 Ω x 2) 누락, CAN_H/L 반대 연결 가능성이 큽니다.')
-        if real and errf:
+        if real and errf and d['rx'] == 0:
+            hints.append(f'정상 프레임 0개 + 에러 프레임 {errf}개 → 통신속도(bitrate {c["bitrate"]}) 불일치가 '
+                         '거의 확실합니다. 프로그램을 닫고(PCAN-View도 연결 해제) 시작 창의 '
+                         '"CAN 자동 감지"를 실행하세요.')
+        elif real and errf:
             hints.append(f'에러 프레임 {errf}개: bitrate({c["bitrate"]})가 WS22 설정과 같은지, 배선/종단을 확인하세요.')
         if real and up > 2 and d['rx'] == 0 and not errf:
             hints.append('수신 프레임 0개: WS22 전원(12 V/버스), CAN_H/L/GND 배선, 종단저항, '
@@ -628,15 +712,8 @@ class Vcu:
         if d['rx'] and not d['rx_known']:
             hints.append('프레임은 들어오는데 설정된 WS22 ID가 아닙니다 (아래 수신 ID 참고).')
         # guess the WS22 base address from what is on the bus
-        best = None
-        for i in seen:
-            for off in (0x00, 0x01, 0x02, 0x03):
-                b = i - off
-                if b < 0:
-                    continue
-                score = sum(1 for o in self.WS22_OFFSETS if b + o in seen)
-                if score >= 4 and (best is None or score > best[1]):
-                    best = (b, score)
+        g = guess_ws22_base(seen)
+        best = (g, 0) if g is not None else None
         if best and best[0] != base_cfg:
             hints.append(f'WS22 형태의 프레임이 0x{best[0]:03X} 기준으로 들어옵니다. '
                          f'설정은 0x{base_cfg:03X} → config의 ids.ws22_base 를 {best[0]} 으로 바꾸세요.')
@@ -676,11 +753,7 @@ class Vcu:
                 del self.rx_time[name]
         if save:
             try:
-                with open(self.cfg_path, encoding='utf-8') as f:
-                    raw = json.load(f)
-                raw['ids']['ws22_base'] = new_base
-                with open(self.cfg_path, 'w', encoding='utf-8') as f:
-                    json.dump(raw, f, ensure_ascii=False, indent=2)
+                save_can_settings(self.cfg_path, ws22_base=new_base)
             except Exception as e:  # noqa: BLE001
                 return f'적용은 됐지만 설정 파일 저장 실패: {e}'
         return None
