@@ -7,7 +7,7 @@
 
   "ids": {
     "ws22_dbc_base": 128,
-    "ws22_base": 128,
+    "ws22_base": 1024,
     "drive_cmd_dbc_base": 1280,
     "driver_controls_base": 1280
   },

@@ -49,7 +49,7 @@ python -m unittest discover -s tests                        # 테스트 (vcu/ �
 
 1. **CAN ID base address** — 받은 DBC는 ID가 0x80~0x97입니다. Profinity에서 WS22의
    *Base address*와 *Driver controls base address*를 확인하고 `config.json → ids`에 넣으세요.
-   - `ws22_base`: WS22 송신 base (DBC 그대로면 128 = 0x80, 공장 기본이면 1024 = 0x400)
+   - `ws22_base`: WS22 송신 base. **현재 차량 WS22 = 1024 (0x400, 공장 기본)** — 받은 DBC는 128(0x80) 기준이라 `ws22_dbc_base`는 128 유지
    - `driver_controls_base`: WS22가 명령을 받는 base (기본 1280 = 0x500)
 2. **CAN 어댑터** — `config.json → can`. 예: PCAN `"pcan"/"PCAN_USBBUS1"`, Kvaser `"kvaser"/0`,
    USB‑CAN(slcan) `"slcan"/"COM5"`. bitrate는 WS22 설정과 같게.
