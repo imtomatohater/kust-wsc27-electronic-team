@@ -458,6 +458,8 @@ class App:
         self.cv['hints'] = tk.Label(cd, text='', fg='#b45309', font=(FONT, 9), justify='left',
                                     wraplength=280, anchor='w')
         self.cv['hints'].grid(row=5, column=0, columnspan=2, sticky='w', pady=(4, 0))
+        self.base_btn = tk.Button(cd, text='', bg='#f59e0b', fg='white', font=(FONT, 9, 'bold'),
+                                  command=self.apply_base)
 
         self.out_lbl = ttk.Label(f, text='', foreground='#555')
         self.out_lbl.grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
@@ -532,6 +534,20 @@ class App:
             path = self.v.log.start()
             self.log_btn.config(text='로그 정지', bg='#fde68a')
             self.flash('로그: ' + path)
+
+    def apply_base(self):
+        g = getattr(self, 'base_guess', None)
+        if g is None:
+            return
+        old = self.v.cfg['ids']['ws22_base']
+        if not messagebox.askyesno('WS22 주소 적용',
+                                   f'WS22 송신 base 주소를 0x{old:03X} → 0x{g:03X} ({g}) 로 바꾸고\n'
+                                   f'설정 파일에 저장할까요?\n\n{self.v.cfg_path}\n\n'
+                                   '(구동 명령 주소 driver_controls_base 는 그대로입니다. '
+                                   'Profinity의 Driver controls base address 와 같은지 확인하세요.)'):
+            return
+        err = self.v.apply_ws22_base(g)
+        self.flash(err or f'WS22 base 0x{g:03X} 적용 및 저장 완료')
 
     def quit(self):
         self.v.close()
@@ -663,6 +679,12 @@ class App:
         self.cv['ids'].config(text='\n'.join(f"0x{i:03X} ×{n}{'' if ok else '  ?'}" for i, n, ok in c['ids'][:8])
                               or '(없음)')
         self.cv['hints'].config(text='\n'.join('• ' + h for h in c['hints']))
+        self.base_guess = c['base_guess']
+        if c['base_guess'] is not None and s['state'] != 'ARMED':
+            self.base_btn.config(text=f"감지된 주소 0x{c['base_guess']:03X} 적용")
+            self.base_btn.grid(row=6, column=0, columnspan=2, sticky='we', pady=(6, 0))
+        else:
+            self.base_btn.grid_remove()
         self.root.after(100, self.tick)
 
 

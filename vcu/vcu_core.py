@@ -652,11 +652,38 @@ class Vcu:
         if real and self._fresh() and not hints:
             hints.append('정상 — WS22 텔레메트리 수신 중.')
         top = sorted(seen.items(), key=lambda kv: -kv[1])[:10]
-        return dict(real=real, iface=f'{c["interface"]} / {c["channel"]} / {c["bitrate"]} bps',
+        guess = best[0] if best and best[0] != base_cfg else None
+        return dict(base_cfg=base_cfg, base_guess=guess, real=real, iface=f'{c["interface"]} / {c["channel"]} / {c["bitrate"]} bps',
                     state=st, rx=d['rx'], rx_known=d['rx_known'], tx=d['tx'], tx_err=d['tx_err'],
                     err_frames=errf, rx_fps=rx_fps, tx_fps=tx_fps,
                     ids=[(i, n, i in known or i in tx_ids) for i, n in top],
                     unknown=unknown, hints=hints)
+
+    def apply_ws22_base(self, new_base, save=True):
+        """Switch the WS22 broadcast base address live (DISARMED only) and save it to the
+        config file the program was started with. Returns an error string or None."""
+        with self.lock:
+            if self.state == ARMED:
+                return 'DISARM 상태에서만 주소 변경'
+            old = self.cfg['ids']['ws22_base']
+            if new_base == old:
+                return None
+            if self.pedal and self.pc['can_id'] in range(new_base, new_base + 0x20):
+                return f'새 주소 0x{new_base:03X} 범위가 페달 ID 0x{self.pc["can_id"]:03X}와 겹침'
+            self.rx_db.remap(old, new_base)
+            self.cfg['ids']['ws22_base'] = new_base
+            for name in [n for n in self.rx_time if n != 'PedalInput']:
+                del self.rx_time[name]
+        if save:
+            try:
+                with open(self.cfg_path, encoding='utf-8') as f:
+                    raw = json.load(f)
+                raw['ids']['ws22_base'] = new_base
+                with open(self.cfg_path, 'w', encoding='utf-8') as f:
+                    json.dump(raw, f, ensure_ascii=False, indent=2)
+            except Exception as e:  # noqa: BLE001
+                return f'적용은 됐지만 설정 파일 저장 실패: {e}'
+        return None
 
     def _pedal_active(self):
         if self.mode != TORQUE:
