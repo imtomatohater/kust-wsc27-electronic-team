@@ -6,7 +6,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-from vcu_core import Vcu, ARMED, FAULT, DISARMED, IMMEDIATE, SPEED  # noqa: E402
+from vcu_core import Vcu, ARMED, FAULT, DISARMED, IMMEDIATE, SPEED, SCREEN  # noqa: E402
 
 CFG = os.path.join(HERE, 'config_bench24v.json')
 
@@ -77,6 +77,27 @@ class BenchSim(unittest.TestCase):
         time.sleep(0.3)
         v.reset_fault()
         self.assertEqual(v.snapshot()['state'], DISARMED)
+
+    def test_screen_pedal_drives_and_ui_freeze_trips(self):
+        v = self.v
+        self.assertIsNone(v.set_source(SCREEN))
+        v.screen_pedal(0.0)
+        time.sleep(0.15)
+        self.assertIsNone(v.arm())
+        end = time.time() + 1.5
+        while time.time() < end:                 # UI keeps refreshing at ~33 Hz
+            v.screen_pedal(51.5)
+            time.sleep(0.03)
+        s = v.snapshot()
+        self.assertEqual(s['state'], ARMED, s['fault'])
+        self.assertAlmostEqual(s['cmd'], 10.0, 1)  # half travel -> half of max_torque_pct 20
+        self.assertGreater(s['cur'], 0.09)
+        v.screen_pedal(51.5, brake=True)
+        time.sleep(0.15)
+        self.assertEqual(v.snapshot()['cur'], 0.0)
+        v.screen_pedal(51.5)                     # then the UI stops updating
+        self.assertTrue(wait(lambda: v.snapshot()['state'] == FAULT, 1.0))
+        self.assertIn('화면 페달 응답 없음', v.snapshot()['fault'])
 
     def test_monitor_only_never_sends(self):
         self.v.close()

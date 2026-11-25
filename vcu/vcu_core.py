@@ -8,6 +8,8 @@ import csv
 import json
 import math
 import os
+import shutil
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -15,11 +17,43 @@ from dataclasses import dataclass, field
 from dbc_lite import Database
 from pedal import Pedal, merged as pedal_merged, validate as validate_pedal
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# HERE     : bundled read-only resources (dbc/, default configs). PyInstaller -> sys._MEIPASS
+# DATA_DIR : user-editable configs + logs. Packaged exe -> Documents/WS22_VCU, source run -> HERE
+HERE = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+FROZEN = getattr(sys, 'frozen', False)
+
+
+def _documents_dir():
+    """Real 'Documents' folder (may be redirected, e.g. to OneDrive, on Windows)."""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(1024)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0:  # CSIDL_PERSONAL
+                return buf.value
+        except Exception:  # noqa: BLE001
+            pass
+    return os.path.join(os.path.expanduser('~'), 'Documents')
+
+
+DATA_DIR = os.path.join(_documents_dir(), 'WS22_VCU') if FROZEN else HERE
+DEFAULT_CONFIGS = ('config.json', 'config_bench24v.json')
+
+
+def ensure_data_dir():
+    """Create DATA_DIR and copy default configs there once (never overwrites user edits)."""
+    os.makedirs(os.path.join(DATA_DIR, 'logs'), exist_ok=True)
+    for name in DEFAULT_CONFIGS:
+        dst = os.path.join(DATA_DIR, name)
+        src = os.path.join(HERE, name)
+        if not os.path.exists(dst) and os.path.exists(src):
+            shutil.copyfile(src, dst)
+    return DATA_DIR
 
 DISARMED, ARMED, FAULT = 'DISARMED', 'ARMED', 'FAULT'
 TORQUE, SPEED = 'TORQUE', 'SPEED'
-SLIDER, PEDAL = 'SLIDER', 'PEDAL'          # command source
+SLIDER, PEDAL, SCREEN = 'SLIDER', 'PEDAL', 'SCREEN'   # command source (SCREEN = on-screen pedal)
+SCREEN_TIMEOUT_S = 0.3                     # on-screen pedal must be refreshed by the UI this often
 
 
 # ----------------------------------------------------------------- CAN bus
@@ -336,9 +370,9 @@ class Logger:
         return self.f_sig is not None
 
     def start(self):
-        os.makedirs(os.path.join(HERE, 'logs'), exist_ok=True)
+        os.makedirs(os.path.join(DATA_DIR, 'logs'), exist_ok=True)
         stamp = time.strftime('%Y%m%d_%H%M%S')
-        base = os.path.join(HERE, 'logs', stamp)
+        base = os.path.join(DATA_DIR, 'logs', stamp)
         self.t0 = time.time()
         with self.lock:
             self.f_sig = open(base + '_signals.csv', 'w', newline='', encoding='utf-8-sig')
@@ -370,7 +404,9 @@ class Logger:
 
 # ------------------------------------------------------------------- VCU
 class Vcu:
-    def __init__(self, cfg_path=os.path.join(HERE, 'config.json'), sim=False, monitor=False):
+    def __init__(self, cfg_path=None, sim=False, monitor=False):
+        cfg_path = cfg_path or os.path.join(DATA_DIR, 'config.json')
+        self.cfg_path = cfg_path
         with open(cfg_path, encoding='utf-8') as f:
             self.cfg = json.load(f)
         problems = validate_config(self.cfg)
@@ -393,8 +429,11 @@ class Vcu:
             self.pedal_db = Database().load(os.path.join(HERE, 'dbc', 'vcu_pedal.dbc')) \
                 .remap(0x600, self.pc['can_id'])
             self.pedal = Pedal(self.pc)
-        self.pedal_out = None
+        self.pedal_out = self.pedal_can_out = None
         self.pedal_cnt, self.pedal_alive_t = None, 0.0
+        # on-screen pedal: same calibration/processing as the CAN pedal, fed by the UI
+        self.spedal = Pedal(self.pc)
+        self.screen = None                # (mv1, mv2, brake, time)
 
         self.monitor = monitor            # listen-only: never transmits, cannot ARM
         self.sim = sim
@@ -475,7 +514,7 @@ class Vcu:
         with self.lock:
             if self.state == ARMED:
                 return 'DISARM 상태에서만 모드 변경'
-            if mode == SPEED and self.source == PEDAL:
+            if mode == SPEED and self.source in (PEDAL, SCREEN):
                 return '페달 입력은 토크 모드 전용 — 입력을 슬라이더로 바꾼 뒤 속도 모드'
             self.mode, self.cmd = mode, 0.0
 
@@ -485,9 +524,19 @@ class Vcu:
                 return 'DISARM 상태에서만 입력 변경'
             if src == PEDAL and not self.pedal:
                 return 'config.json 의 pedal.enabled 가 false'
-            if src == PEDAL and self.mode != TORQUE:
+            if src in (PEDAL, SCREEN) and self.mode != TORQUE:
                 return '페달 입력은 토크 모드에서만'
             self.source, self.cmd = src, 0.0
+
+    def screen_pedal(self, travel_pct, brake=False):
+        """On-screen pedal position from the UI (0..100 % travel). Converted to sensor mV with
+        the configured calibration so it runs through exactly the same Pedal processing."""
+        c = self.pc
+        x = max(0.0, min(1.0, travel_pct / 100))
+        mv1 = c['ch1_mV_released'] + x * (c['ch1_mV_full'] - c['ch1_mV_released'])
+        mv2 = c['ch2_mV_released'] + x * (c['ch2_mV_full'] - c['ch2_mV_released'])
+        with self.lock:
+            self.screen = (mv1, mv2, bool(brake), time.time())
 
     def sim_pedal(self, **kw):
         """Simulator only: drive the virtual pedal node (mv1, mv2, brake, on, frozen)."""
@@ -505,7 +554,7 @@ class Vcu:
             return dict(tel=dict(self.tel), state=self.state, fault=self.fault,
                         fault_level=self.fault_level, mode=self.mode, source=self.source,
                         direction=self.direction, cmd=self.cmd, fresh=self._fresh(),
-                        monitor=self.monitor, pedal=self.pedal_out,
+                        monitor=self.monitor, pedal=self.pedal_out, pedal_can=self.pedal_can_out,
                         pedal_enabled=self.pedal is not None, **self.out)
 
     def close(self):
@@ -521,7 +570,9 @@ class Vcu:
         return all(now - self.rx_time.get(n, 0) < to for n in names)
 
     def _pedal_active(self):
-        return self.pedal is not None and self.source == PEDAL and self.mode == TORQUE
+        if self.mode != TORQUE:
+            return False
+        return self.source == SCREEN or (self.source == PEDAL and self.pedal is not None)
 
     def _pedal_alive(self, now):
         to = self.pc['timeout_s']
@@ -608,13 +659,24 @@ class Vcu:
                          bemf=None, warn=[])
                 if armed and not fresh:
                     p['trip'] = (IMMEDIATE, 'CAN 수신 타임아웃 (WS22 응답 없음)')
+                now, t = time.time(), self.tel
+                self.pedal_can_out = None
                 if self.pedal:                         # evaluated always, for monitoring
-                    now, t = time.time(), self.tel
                     got = 'PedalInput' in self.rx_time
-                    po = self.pedal.evaluate(t.get('Apps1_mV') if got else None,
-                                             t.get('Apps2_mV') if got else None,
-                                             t.get('BrakeSwitch', 0), self._pedal_alive(now), now)
-                    self.pedal_out = po
+                    self.pedal_can_out = self.pedal.evaluate(
+                        t.get('Apps1_mV') if got else None, t.get('Apps2_mV') if got else None,
+                        t.get('BrakeSwitch', 0), self._pedal_alive(now), now)
+                if self.source == SCREEN:
+                    sc = self.screen
+                    alive = sc is not None and now - sc[3] < SCREEN_TIMEOUT_S
+                    po = self.spedal.evaluate(sc[0] if sc else None, sc[1] if sc else None,
+                                              sc[2] if sc else 0, alive, now)
+                    if po['fault'] and not alive:
+                        po['fault'] = '화면 페달 응답 없음 (UI 멈춤)'
+                else:
+                    po = self.pedal_can_out
+                self.pedal_out = po
+                if po:
                     if self._pedal_active():
                         self.cmd = po['torque']
                         if po['fault'] and armed and not p['trip']:
